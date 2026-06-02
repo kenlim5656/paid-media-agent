@@ -104,10 +104,11 @@ class OperatorAgent(BaseAgent):
             "name": "push_audience_suppression",
             "description": (
                 "Add company domains to an audience exclusion list on a supported platform "
-                "(DV360, Meta, LinkedIn, Google Ads) to suppress top-of-funnel ads for "
-                "accounts already in open pipeline. "
+                "(DV360, Meta, LinkedIn, Google Ads, TikTok) to suppress top-of-funnel ads "
+                "for accounts already in open pipeline. "
                 "Google Ads: uses Customer Match — pass audience_list_id as the user_list "
                 "resource_name (e.g. 'customers/123/userLists/456'). "
+                "TikTok: uses Custom Audience — pass audience_list_id as the TikTok audience_id. "
                 "Requires approval unless OPERATOR_REQUIRE_APPROVAL=false."
             ),
             "input_schema": {
@@ -116,7 +117,7 @@ class OperatorAgent(BaseAgent):
                     "action_id":       {"type": "string", "description": "From log_proposed_action"},
                     "platform":        {
                         "type": "string",
-                        "enum": ["dv360", "meta", "linkedin", "google_ads"],
+                        "enum": ["dv360", "meta", "linkedin", "google_ads", "tiktok"],
                         "description": "Which platform to push the exclusion to",
                     },
                     "advertiser_id":    {"type": "string", "description": "Platform advertiser / customer ID"},
@@ -125,7 +126,8 @@ class OperatorAgent(BaseAgent):
                         "description": (
                             "Audience list ID. "
                             "DV360/Meta/LinkedIn: list/segment ID. "
-                            "Google Ads: user_list resource_name (customers/{id}/userLists/{id})."
+                            "Google Ads: user_list resource_name (customers/{id}/userLists/{id}). "
+                            "TikTok: custom audience_id (numeric string)."
                         ),
                     },
                     "domains": {
@@ -141,9 +143,10 @@ class OperatorAgent(BaseAgent):
             "name": "reallocate_budget",
             "description": (
                 "Move budget from an underperforming campaign to a high-performing one. "
-                "Supports DV360, SA360, Meta, LinkedIn, and Google Ads. "
+                "Supports DV360, SA360, Meta, LinkedIn, Google Ads, and TikTok. "
                 "Capped at max_budget_shift_pct per run. "
                 "Google Ads: source_entity_id and target_entity_id are campaign IDs (numeric). "
+                "TikTok: source_entity_id and target_entity_id are TikTok campaign IDs. "
                 "Requires approval unless OPERATOR_REQUIRE_APPROVAL=false."
             ),
             "input_schema": {
@@ -152,11 +155,11 @@ class OperatorAgent(BaseAgent):
                     "action_id":        {"type": "string", "description": "From log_proposed_action"},
                     "platform":         {
                         "type": "string",
-                        "enum": ["dv360", "sa360", "meta", "linkedin", "google_ads"],
+                        "enum": ["dv360", "sa360", "meta", "linkedin", "google_ads", "tiktok"],
                     },
                     "advertiser_id":    {
                         "type": "string",
-                        "description": "Platform advertiser ID. Google Ads: customer ID (digits only).",
+                        "description": "Platform advertiser ID. Google Ads: customer ID (digits only). TikTok: advertiser_id.",
                     },
                     "source_entity_id": {"type": "string", "description": "Campaign / line item to reduce"},
                     "target_entity_id": {"type": "string", "description": "Campaign / line item to increase"},
@@ -327,7 +330,11 @@ class OperatorAgent(BaseAgent):
         from tools.meta_client import MetaAPIError, add_domains_to_exclusion_audience
         from tools.linkedin_client import LinkedInAPIError, add_companies_to_segment
         from tools.google_ads_client import (
-            GoogleAdsAPIError, GoogleAdsSetupError, push_domain_suppression,
+            GoogleAdsAPIError, GoogleAdsSetupError, push_domain_suppression as gads_push_suppression,
+        )
+        from tools.tiktok_ads_client import (
+            TikTokAdsError, TikTokSetupError,
+            push_domain_suppression as tiktok_push_suppression,
         )
 
         try:
@@ -350,9 +357,20 @@ class OperatorAgent(BaseAgent):
                 # Google Ads Customer Match — audience_list_id is the user_list resource_name.
                 # Domain-to-email mapping via CRM is preferred for higher match rates.
                 # If no emails are pre-loaded, push_domain_suppression returns a manual fallback.
-                result = push_domain_suppression(
+                result = gads_push_suppression(
                     customer_id=advertiser_id,
                     user_list_resource_name=audience_list_id,
+                    domains=domains,
+                    crm_emails_by_domain=None,  # TODO: wire CRM lookup in Task 22/24
+                )
+
+            elif platform == "tiktok":
+                # TikTok Custom Audience — audience_list_id is the TikTok audience_id (numeric string).
+                # Domain-to-email mapping via CRM is preferred (TikTok doesn't support raw domains).
+                # If no CRM data, push_domain_suppression returns a manual fallback with instructions.
+                result = tiktok_push_suppression(
+                    advertiser_id=advertiser_id,
+                    audience_id=audience_list_id,
                     domains=domains,
                     crm_emails_by_domain=None,  # TODO: wire CRM lookup in Task 22/24
                 )
@@ -375,7 +393,8 @@ class OperatorAgent(BaseAgent):
             return {**result, "action_id": action_id, "domain_count": len(domains), "platform": platform}
 
         except (ApprovalRequiredError, MetaAPIError, LinkedInAPIError,
-                GoogleAdsAPIError, GoogleAdsSetupError) as exc:
+                GoogleAdsAPIError, GoogleAdsSetupError,
+                TikTokAdsError, TikTokSetupError) as exc:
             return {
                 "action_id": action_id,
                 "executed":  False,
@@ -406,6 +425,10 @@ class OperatorAgent(BaseAgent):
         from tools.google_ads_client import (
             GoogleAdsAPIError, GoogleAdsSetupError, GoogleAdsBudgetGuardrailError,
             reallocate_campaign_budget as gads_reallocate,
+        )
+        from tools.tiktok_ads_client import (
+            TikTokAdsError, TikTokSetupError, TikTokBudgetGuardrailError,
+            reallocate_campaign_budget as tiktok_reallocate,
         )
 
         try:
@@ -458,6 +481,16 @@ class OperatorAgent(BaseAgent):
                     amount_usd=amount_usd,
                 )
 
+            elif platform == "tiktok":
+                # advertiser_id = TikTok advertiser_id (numeric string)
+                # source/target entity IDs = TikTok campaign IDs (numeric strings)
+                result = tiktok_reallocate(
+                    advertiser_id=advertiser_id,
+                    source_campaign_id=source_entity_id,
+                    target_campaign_id=target_entity_id,
+                    amount_usd=amount_usd,
+                )
+
             else:
                 if settings.operator_require_approval:
                     raise ApprovalRequiredError(
@@ -477,6 +510,7 @@ class OperatorAgent(BaseAgent):
 
         except (ApprovalRequiredError, MetaAPIError, LinkedInAPIError,
                 GoogleAdsAPIError, GoogleAdsSetupError, GoogleAdsBudgetGuardrailError,
+                TikTokAdsError, TikTokSetupError, TikTokBudgetGuardrailError,
                 ValueError) as exc:
             return {
                 "action_id": action_id,

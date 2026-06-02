@@ -52,9 +52,15 @@ class Settings(BaseSettings):
     google_ads_api_version: str = "v21"        # centralized version — override GOOGLE_ADS_API_VERSION env var
     # v20 sunsets 2026-06-10. v21 is current stable. Do not hardcode elsewhere.
 
-    # TikTok Ads (future)
-    tiktok_access_token: str = ""
-    tiktok_advertiser_id: str = ""
+    # TikTok Ads Marketing API (Task 20)
+    # Full Mode (headless / Cloud Run): set TIKTOK_ACCESS_TOKEN + TIKTOK_ADVERTISER_IDS.
+    # Simple Mode (local practitioner): leave blank and run `python tools/setup_tiktok_ads.py`.
+    tiktok_access_token: str = ""           # long-lived access token (~1 year expiry)
+    tiktok_advertiser_id: str = ""          # default single advertiser ID
+    tiktok_app_id: str = ""                 # OAuth app ID (from TikTok Ads Manager → API)
+    tiktok_app_secret: str = ""             # OAuth app secret
+    tiktok_api_version: str = "v1.3"        # centralized version — override TIKTOK_API_VERSION env var
+    # v1.3 is current stable. To upgrade: change this value only — no code changes needed elsewhere.
 
     # GTM / Server-Side
     gtm_server_container_url: str = ""
