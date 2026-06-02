@@ -86,6 +86,11 @@ _TABLES: dict[str, str] = {
     "v_target_account_funnel":   "v_target_account_funnel",
     "v_dark_funnel_coverage":    "v_dark_funnel_coverage",
 
+    # ── MMM layer — tables (08_mmm.sql) ──────────────────────────────────────
+    # Written by tools/meridian_analyst_engine.py after each model run.
+    "mmm_runs":                  "mmm_runs",
+    "mmm_channel_contributions": "mmm_channel_contributions",
+
     # ── Source / staging tables (org-defined, outside schema DDL) ─────────────
     # These are the raw source tables that the agents read from.
     # Names are configurable via settings but default to sensible values.

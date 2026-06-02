@@ -243,6 +243,64 @@ class AnalystAgent(BaseAgent):
             },
         },
         {
+            "name": "run_mmm_model",
+            "description": (
+                "Run a Google Meridian Bayesian Media Mix Model over a specified date range. "
+                "Extracts geo-level spend + impressions from platform_daily_spend, aggregates "
+                "to weekly [Geo × Time × Channel] tensors, runs MCMC posterior sampling with "
+                "the JAX/NumPyro backend, and writes ROI estimates + diagnostics to "
+                "mmm_runs and mmm_channel_contributions in BigQuery. "
+                "Returns per-channel ROI posterior summaries and convergence diagnostics. "
+                "Requires the 'paid-media-agent[mmm]' optional dependencies. "
+                "Runtime: 35–45 minutes on Cloud Run (4 vCPU, 16 GB RAM). "
+                "IMPORTANT: roi_priors is the Task 22 calibration hook — when incrementality "
+                "testing results are available, pass them here to anchor the Bayesian priors "
+                "to experimentally measured lift rather than observational data alone."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "date_from": {
+                        "type": "string",
+                        "description": "Start date for data extraction. Format: YYYY-MM-DD. Minimum 78 weeks (18 months) recommended; 104 weeks (2 years) is ideal.",
+                    },
+                    "date_to": {
+                        "type": "string",
+                        "description": "End date for data extraction. Format: YYYY-MM-DD. Typically today or the last complete Sunday.",
+                    },
+                    "platforms": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Restrict to specific platforms (e.g. ['google_ads', 'meta', 'tiktok']). Omit to include all platforms with geo data.",
+                    },
+                    "geo_allowlist": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Restrict to specific ISO country codes (e.g. ['US', 'CA', 'GB']). Omit to include all geos passing the impressions threshold.",
+                    },
+                    "roi_priors": {
+                        "type": "object",
+                        "description": (
+                            "Task 22 Bayesian calibration hook. Pass experimentally measured ROI priors "
+                            "to anchor the model to real lift data rather than observational patterns. "
+                            "Format: {\"google_ads\": {\"mu\": 0.45, \"sigma\": 0.15, \"source\": \"geo_holdout_2026_q1\"}}. "
+                            "Omit to use weakly informative defaults (full observational inference)."
+                        ),
+                        "additionalProperties": True,
+                    },
+                    "n_draws": {
+                        "type": "integer",
+                        "description": "MCMC draws per chain. Default 500. Reduce to 250 to stay within Cloud Run 60-min timeout for large datasets.",
+                    },
+                    "n_chains": {
+                        "type": "integer",
+                        "description": "Parallel MCMC chains. Default 4 (matches XLA_FLAGS device count). Do not exceed 4 on CPU Cloud Run.",
+                    },
+                },
+                "required": ["date_from", "date_to"],
+            },
+        },
+        {
             "name": "complete_attribution_run",
             "description": "Mark an attribution run as completed or failed in attribution_runs.",
             "input_schema": {
@@ -262,6 +320,100 @@ class AnalystAgent(BaseAgent):
     ]
 
     # ── Tool implementations ──────────────────────────────────────────────────
+
+    def _tool_run_mmm_model(
+        self,
+        date_from: str,
+        date_to: str,
+        platforms: list[str] | None = None,
+        geo_allowlist: list[str] | None = None,
+        roi_priors: dict | None = None,
+        n_draws: int = 500,
+        n_chains: int = 4,
+    ) -> dict:
+        """
+        Run the Meridian Bayesian MMM pipeline end-to-end.
+
+        Delegates to tools/meridian_analyst_engine.run_mmm_pipeline() which handles
+        data extraction (Component 1), model construction, MCMC sampling, artifact
+        persistence, and BigQuery write-back (Component 2).
+
+        The roi_priors parameter is the Task 22 calibration hook. When
+        incrementality_lift_results is populated by Task 22, the Analyst agent should
+        read that table first, then pass the results here as roi_priors to ground the
+        MMM posteriors in experimentally measured lift:
+
+            lift_rows = bq.run_query("SELECT channel, iROAS_mean, iROAS_std, experiment_id
+                                      FROM incrementality_lift_results
+                                      WHERE is_active = TRUE")
+            roi_priors = {
+                row["channel"]: {
+                    "mu":     row["iROAS_mean"],
+                    "sigma":  row["iROAS_std"],
+                    "source": row["experiment_id"],
+                }
+                for row in lift_rows
+            }
+        """
+        try:
+            from tools.meridian_analyst_engine import run_mmm_pipeline
+        except ImportError as exc:
+            return {
+                "status": "dependency_missing",
+                "error": str(exc),
+                "fix": "Install MMM dependencies: pip install 'paid-media-agent[mmm]'",
+                "note": (
+                    "The MMM engine requires google-meridian, jax[cpu], numpyro, numpy, "
+                    "pandas, and pyarrow. These are not included in the core install to "
+                    "keep the base agent lightweight."
+                ),
+            }
+
+        try:
+            result = run_mmm_pipeline(
+                date_from=date_from,
+                date_to=date_to,
+                platforms=platforms,
+                geo_allowlist=geo_allowlist,
+                roi_priors=roi_priors,
+                n_draws=n_draws,
+                n_chains=n_chains,
+                write_to_bq=True,
+            )
+            return {
+                "status": "completed",
+                "run_id": result.get("run_id"),
+                "r_hat_max": result.get("r_hat_max"),
+                "n_divergences": result.get("n_divergences"),
+                "elapsed_seconds": result.get("elapsed_seconds"),
+                "roi_summary": result.get("roi_summary", {}),
+                "data_shape": result.get("data_shape", {}),
+                "artifact_path": result.get("artifact_path"),
+                "bq_tables_written": ["mmm_runs", "mmm_channel_contributions"],
+                "convergence_note": (
+                    "Converged (R-hat < 1.1)."
+                    if (result.get("r_hat_max") or 99.0) < 1.1
+                    else f"WARNING: R-hat={result.get('r_hat_max')} ≥ 1.1. "
+                         "Increase n_draws or n_adapt for better convergence."
+                ),
+            }
+        except ValueError as exc:
+            return {
+                "status": "data_insufficient",
+                "error": str(exc),
+                "fix": (
+                    "Common causes: (1) geo_country_code not populated — run migration 001, "
+                    "(2) date range too short — use at least 78 weeks, "
+                    "(3) too few geos — lower min_weekly_impressions in load_meridian_data()."
+                ),
+            }
+        except Exception as exc:
+            log.error("analyst.mmm_failed", error=str(exc))
+            return {
+                "status": "failed",
+                "error": str(exc),
+                "note": "Check Cloud Logging for the full traceback. Common issues: JAX OOM (reduce n_draws or geos), timeout (reduce n_draws to 250).",
+            }
 
     def _tool_enrich_sessions(
         self,

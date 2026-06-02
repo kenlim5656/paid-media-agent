@@ -36,5 +36,26 @@ google_ads = [
     "pyyaml>=6.0",
 ]
 
+# Meridian MMM — Task 27
+# Google's open-source Bayesian Media Mix Model library with JAX/NumPyro backend.
+# ~800 MB total (JAX + TensorFlow Probability + Meridian). Install only on instances
+# that run the MMM pipeline (dedicated Cloud Run service or local analyst workstation).
+# Usage: pip install 'paid-media-agent[mmm]'
+#
+# Cloud Run requirements (set as env vars on the MMM service):
+#   XLA_FLAGS = "--xla_force_host_platform_device_count=4"
+#   JAX_PLATFORM_NAME = "cpu"
+#   Memory: minimum 8 GB RAM (16 GB recommended for n_draws=500, 5+ geos)
+#   CPU: minimum 4 vCPUs (maps to 4 JAX virtual devices for parallel chains)
+#   Timeout: 3600 seconds (Cloud Run max — needed for n_draws=500)
+mmm = [
+    "google-meridian>=0.1.0",
+    "jax[cpu]>=0.4.30",
+    "numpyro>=0.15.0",
+    "numpy>=1.26.0",
+    "pandas>=2.2.0",
+    "pyarrow>=17.0.0",    # BigQuery → pandas transport (to_dataframe())
+]
+
 [tool.ruff.lint]
 select = ["E", "F", "I"]
