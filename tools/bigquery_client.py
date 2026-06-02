@@ -70,6 +70,17 @@ _TABLES: dict[str, str] = {
     "v_keyword_performance":     "v_keyword_performance",
     "v_daily_performance":       "v_daily_performance",
 
+    # ── Account-based analytics layer — tables (07_account_analytics.sql) ───────
+    "company_profiles":          "company_profiles",
+    "ip_resolution_cache":       "ip_resolution_cache",
+    "company_sessions":          "company_sessions",
+    "company_engagement":        "company_engagement",
+    "target_account_activity":   "target_account_activity",
+
+    # ── Account-based analytics layer — views (07_account_analytics.sql) ────────
+    "v_target_account_funnel":   "v_target_account_funnel",
+    "v_dark_funnel_coverage":    "v_dark_funnel_coverage",
+
     # ── Source / staging tables (org-defined, outside schema DDL) ─────────────
     # These are the raw source tables that the agents read from.
     # Names are configurable via settings but default to sensible values.
