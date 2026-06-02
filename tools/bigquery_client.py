@@ -54,6 +54,22 @@ _TABLES: dict[str, str] = {
     "operator_action_log":       "operator_action_log",
     "operator_pending_approvals": "operator_pending_approvals",
 
+    # ── Reporting layer — tables (06_reporting.sql) ────────────────────────────
+    "platform_keywords":              "platform_keywords",
+    "platform_daily_spend_ad":        "platform_daily_spend_ad",
+    "platform_daily_spend_keyword":   "platform_daily_spend_keyword",
+
+    # ── Reporting layer — views (06_reporting.sql) ─────────────────────────────
+    # These are BigQuery views, not base tables. They are read-only.
+    # Use table_ref() to query them just like base tables.
+    "v_campaign_performance":    "v_campaign_performance",
+    "v_pacing_status":           "v_pacing_status",
+    "v_roas_comparison":         "v_roas_comparison",
+    "v_channel_efficiency":      "v_channel_efficiency",
+    "v_ad_performance":          "v_ad_performance",
+    "v_keyword_performance":     "v_keyword_performance",
+    "v_daily_performance":       "v_daily_performance",
+
     # ── Source / staging tables (org-defined, outside schema DDL) ─────────────
     # These are the raw source tables that the agents read from.
     # Names are configurable via settings but default to sensible values.
