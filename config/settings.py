@@ -94,6 +94,22 @@ class Settings(BaseSettings):
     ip_enrichment_batch_size: int = 1_000            # sessions per enrichment run
     ip_enrichment_lookback_hours: int = 48           # look back this many hours for unenriched sessions
 
+    # Reddit API — Social Listening (Task 25)
+    # Developer app credentials from reddit.com/prefs/apps (script-type app).
+    # Usage: pip install 'paid-media-agent[social]'
+    reddit_client_id: str = ""
+    reddit_client_secret: str = ""
+    reddit_user_agent: str = "paid-media-agent/1.0 (social-listening)"
+
+    # Google Trends data provider — Social Listening (Task 25)
+    # Set these three vars to use an authenticated marketing data provider
+    # (DataForSEO Google Trends API or compatible service).
+    # If unset, the client falls back to direct HTTP with rate-limit handling.
+    # DataForSEO endpoint: https://api.dataforseo.com/v3/keywords_data/google_trends/explore/live
+    google_trends_provider_url: str = ""       # POST endpoint URL
+    google_trends_provider_username: str = ""  # Basic Auth username (email for DataForSEO)
+    google_trends_provider_password: str = ""  # Basic Auth password (API key for DataForSEO)
+
     # Legacy aliases (kept for backwards compat with existing code)
     @property
     def gclid_capture_floor_pct(self) -> float:

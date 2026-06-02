@@ -600,6 +600,75 @@ class AnalystAgent(BaseAgent):
                 "required": ["run_id", "status"],
             },
         },
+        {
+            "name": "fetch_market_momentum_signals",
+            "description": (
+                "Ingest external trend and social signal data for a set of target keywords. "
+                "Queries Google Trends (relative search interest, 0–100 normalised index) "
+                "and Reddit (post frequency + engagement scoring via PRAW) for each keyword, "
+                "writes clean rows to BigQuery (social_trend_signals + social_mentions_staging), "
+                "and computes Month-over-Month signal velocity (current vs. prior window). "
+                "Returns a structured dict of metric arrays for backend consumption and a "
+                "Markdown table summarising the highest-velocity search terms and active topics "
+                "for direct presentation to the user. "
+                "Requires pip install 'paid-media-agent[social]' and REDDIT_CLIENT_ID / "
+                "REDDIT_CLIENT_SECRET environment variables for Reddit ingestion."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "keywords": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Target keyword or phrase strings to track. "
+                            "1–20 keywords supported. Each keyword is queried against "
+                            "Google Trends and all specified subreddits. "
+                            "Example: ['B2B marketing automation', 'intent data', 'CDP vs DMP']"
+                        ),
+                    },
+                    "subreddits": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Target subreddit names (without r/ prefix) to search. "
+                            "If omitted, uses a curated default list of business subreddits: "
+                            "marketing, SEO, PPC, sales, analytics, SaaS, entrepreneur, startups. "
+                            "Example: ['marketing', 'analytics', 'SEO']"
+                        ),
+                    },
+                    "lookback_days": {
+                        "type": "integer",
+                        "default": 30,
+                        "description": (
+                            "Length of the current signal window in days (default 30). "
+                            "The prior window (for MoM velocity) covers the equivalent period "
+                            "immediately preceding this window. "
+                            "Longer windows (90 days) provide more stable velocity estimates; "
+                            "shorter windows (14 days) are more responsive to recent spikes."
+                        ),
+                    },
+                    "geo_code": {
+                        "type": "string",
+                        "default": "US",
+                        "description": (
+                            "ISO 3166-1 alpha-2 country code for Google Trends geo filter. "
+                            "Examples: 'US', 'GB', 'DE', 'CA'. Empty string = worldwide."
+                        ),
+                    },
+                    "sources": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": ["google_trends", "reddit"]},
+                        "description": (
+                            "Which data sources to ingest. Defaults to both. "
+                            "Specify ['google_trends'] to skip Reddit (useful when PRAW "
+                            "credentials are not yet configured)."
+                        ),
+                    },
+                },
+                "required": ["keywords"],
+            },
+        },
     ]
 
     # ── Tool implementations ──────────────────────────────────────────────────
@@ -1884,3 +1953,211 @@ class AnalystAgent(BaseAgent):
 
         log.info("analyst.run_completed", run_id=run_id, status=status)
         return {"run_id": run_id, "status": status, "completed_at": now}
+
+    def _tool_fetch_market_momentum_signals(
+        self,
+        keywords: list[str],
+        subreddits: list[str] | None = None,
+        lookback_days: int = 30,
+        geo_code: str = "US",
+        sources: list[str] | None = None,
+    ) -> dict:
+        """
+        Ingest Google Trends + Reddit signals for a keyword set.
+
+        Delegates to tools/social_listening_client.run_social_listening() which:
+          1. Fetches Google Trends interest-over-time (current + prior windows)
+          2. Fetches Reddit posts via PRAW across target subreddits
+          3. Normalises and scores sentiment on all mention text
+          4. Writes rows to social_trend_signals + social_mentions_staging
+          5. Computes MoM velocity per keyword
+
+        Returns a dual payload:
+          signal_summary  — per-keyword velocity data for backend consumption
+          markdown_summary — formatted Markdown table for user presentation
+        """
+        from tools.social_listening_client import run_social_listening
+
+        result = run_social_listening(
+            keywords=keywords,
+            subreddits=subreddits,
+            lookback_days=lookback_days,
+            geo_code=geo_code,
+            sources=sources,
+        )
+
+        signal_summary: dict = result.get("signal_summary", {})
+
+        markdown_summary = _build_momentum_markdown(
+            keywords=keywords,
+            signal_summary=signal_summary,
+            run_id=result["run_id"],
+            signals_written=result["signals_written"],
+            mentions_written=result["mentions_written"],
+            lookback_days=lookback_days,
+            geo_code=geo_code,
+            sources=sources or ["google_trends", "reddit"],
+            errors=result.get("errors", []),
+        )
+
+        log.info(
+            "analyst.market_momentum.complete",
+            run_id=result["run_id"],
+            keywords=keywords,
+            signals_written=result["signals_written"],
+            mentions_written=result["mentions_written"],
+            status=result["status"],
+        )
+
+        return {
+            "ok":              result["status"] in ("completed", "partial"),
+            "run_id":          result["run_id"],
+            "status":          result["status"],
+            "signals_written": result["signals_written"],
+            "mentions_written": result["mentions_written"],
+            "keywords":        keywords,
+            "geo_code":        geo_code,
+            "lookback_days":   lookback_days,
+            "signal_summary":  signal_summary,
+            "markdown_summary": markdown_summary,
+            "errors":          result.get("errors", []),
+        }
+
+
+# ── Momentum Markdown builder (module-level, pure formatting) ─────────────────
+
+_TREND_ICONS = {
+    "rising":  "🟢 Rising",
+    "falling": "🔴 Falling",
+    "stable":  "🟡 Stable",
+    "new":     "🆕 New",
+    "unknown": "⬜ Unknown",
+}
+
+
+def _build_momentum_markdown(
+    keywords: list[str],
+    signal_summary: dict[str, dict],
+    run_id: str,
+    signals_written: int,
+    mentions_written: int,
+    lookback_days: int,
+    geo_code: str,
+    sources: list[str],
+    errors: list[str],
+) -> str:
+    """
+    Build the user-facing Markdown table summarising market momentum signals.
+
+    Shows: keyword, trend direction, current avg interest score, MoM velocity %,
+    and a quick interpretation note.
+    """
+    from datetime import date
+    today = date.today().isoformat()
+
+    # Sort keywords by velocity — rising first, then stable, then falling
+    def _sort_key(kw: str) -> tuple:
+        data = signal_summary.get(kw, {})
+        direction = data.get("trend_direction", "unknown")
+        velocity  = data.get("velocity_pct") or 0.0
+        order_map = {"rising": 0, "new": 1, "stable": 2, "falling": 3, "unknown": 4}
+        return (order_map.get(direction, 4), -abs(velocity))
+
+    sorted_kws = sorted(keywords, key=_sort_key)
+
+    lines: list[str] = [
+        f"## 📊 Market Momentum Signals — {geo_code} | {today}",
+        "",
+        f"**Keywords tracked:** {len(keywords)}  |  "
+        f"**Lookback:** {lookback_days} days  |  "
+        f"**Sources:** {', '.join(sources)}",
+        f"**Run ID:** `{run_id}`  |  "
+        f"**Signals written:** {signals_written}  |  "
+        f"**Mentions indexed:** {mentions_written}",
+        "",
+        "---",
+        "",
+        "### Signal Velocity Summary",
+        "",
+        "| Keyword | Trend | Current Score | MoM Velocity | Prior Score |",
+        "|---------|-------|--------------|-------------|------------|",
+    ]
+
+    for kw in sorted_kws:
+        data        = signal_summary.get(kw, {})
+        direction   = data.get("trend_direction", "unknown")
+        current_avg = data.get("current_avg")
+        prior_avg   = data.get("prior_avg")
+        velocity    = data.get("velocity_pct")
+
+        trend_label   = _TREND_ICONS.get(direction, "⬜ Unknown")
+        current_str   = f"{current_avg:.1f}" if current_avg is not None else "—"
+        prior_str     = f"{prior_avg:.1f}" if prior_avg is not None else "—"
+        velocity_str  = f"{velocity:+.1f}%" if velocity is not None else "—"
+
+        lines.append(
+            f"| {kw} | {trend_label} | {current_str} | {velocity_str} | {prior_str} |"
+        )
+
+    # Highlight top movers
+    rising_kws = [
+        kw for kw in sorted_kws
+        if signal_summary.get(kw, {}).get("trend_direction") == "rising"
+    ]
+    falling_kws = [
+        kw for kw in sorted_kws
+        if signal_summary.get(kw, {}).get("trend_direction") == "falling"
+    ]
+    new_kws = [
+        kw for kw in sorted_kws
+        if signal_summary.get(kw, {}).get("trend_direction") == "new"
+    ]
+
+    lines += ["", "---", "", "### Key Observations", ""]
+
+    if rising_kws:
+        top = rising_kws[0]
+        v   = signal_summary[top].get("velocity_pct")
+        v_s = f"{v:+.1f}%" if v is not None else "n/a"
+        lines.append(
+            f"🟢 **Strongest rising term:** `{top}` ({v_s} MoM) — "
+            "consider increasing keyword coverage and creative alignment."
+        )
+
+    if new_kws:
+        lines.append(
+            f"🆕 **New keywords (no prior baseline):** "
+            + ", ".join(f"`{k}`" for k in new_kws)
+            + " — first observation window. Monitor for sustained momentum."
+        )
+
+    if falling_kws:
+        top_fall = falling_kws[0]
+        v_fall   = signal_summary[top_fall].get("velocity_pct")
+        v_fall_s = f"{v_fall:.1f}%" if v_fall is not None else "n/a"
+        lines.append(
+            f"🔴 **Declining term:** `{top_fall}` ({v_fall_s} MoM) — "
+            "audit creative relevance and consider copy refresh."
+        )
+
+    if not rising_kws and not falling_kws and not new_kws:
+        lines.append("All tracked terms show stable search momentum this period.")
+
+    if errors:
+        lines += [
+            "",
+            f"> ⚠️ **Partial data:** {len(errors)} source(s) returned errors.",
+        ]
+        for e in errors:
+            lines.append(f"> - {e}")
+
+    lines += [
+        "",
+        "---",
+        "",
+        "*Signal scores are Google Trends relative interest (0–100 within the keyword set).*",
+        "*MoM velocity = (current window avg − prior window avg) / prior avg × 100.*",
+        "*Reddit mention counts are normalised to 0–100 relative to the highest-volume keyword.*",
+    ]
+
+    return "\n".join(lines)

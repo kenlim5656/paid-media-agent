@@ -75,5 +75,16 @@ causal = [
     "pandas>=2.2.0",
 ]
 
+# Social Listening — Task 25
+# Google Trends (direct HTTP + DataForSEO provider) + Reddit PRAW adapter.
+# textblob is optional — the client degrades to a lexicon-based sentiment scorer
+# if textblob is not installed. praw and requests are required.
+# Usage: pip install 'paid-media-agent[social]'
+social = [
+    "praw>=7.8.0",
+    "requests>=2.32.0",
+    "textblob>=0.18.0",
+]
+
 [tool.ruff.lint]
 select = ["E", "F", "I"]
