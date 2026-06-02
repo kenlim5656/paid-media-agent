@@ -1,3 +1,8 @@
+# Copyright 2026 @arcticgreyy. All rights reserved.
+# Licensed under the Business Source License 1.1 (BSL 1.1)
+# Persistent Attribution Required. See /LICENSE and /NOTICE for terms.
+# Central Suite Repository: https://github.com/arcticgreyy/paid-media-suite
+
 """
 LinkedIn Marketing API client.
 Covers the two Operator actions: audience exclusion (DMP segments) and campaign budget updates.
