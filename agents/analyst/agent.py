@@ -26,8 +26,10 @@ Your daily run sequence — follow it in order:
 5. Call `write_analyst_insight` — surface the most important finding as a structured insight.
 6. Call `complete_attribution_run` with the run_id — marks run as completed.
 
-Model: Full-Path (first touch 30%, last touch 30%, middle touches split 40%).
-When path count > 1,000, note that Shapley/Markov models are ready to activate.
+Default model: Full-Path (first touch 30%, last touch 30%, middle touches split 40%).
+Data-driven models: use run_shapley_model or run_markov_model instead of run_mta_model
+when data volume allows (> 1,000 converted paths). Shapley is more accurate but slower;
+Markov is faster for many channels. Always compare results to the Full-Path baseline.
 Write efficient SQL. Prefer incremental queries over full scans."""
 
 
@@ -126,6 +128,56 @@ class AnalystAgent(BaseAgent):
                     "model_name":   {"type": "string"},
                 },
                 "required": ["run_id", "period_start", "period_end", "model_name"],
+            },
+        },
+        {
+            "name": "run_shapley_model",
+            "description": (
+                "Compute Shapley value attribution — the game-theoretic fair attribution model. "
+                "Gives each channel credit equal to its average marginal contribution across all "
+                "coalition orderings. Eliminates first-touch / last-touch bias. "
+                "Recommended when path count > 1,000. "
+                "Writes results to attribution_results and attribution_channel_summary."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "run_id":       {"type": "string"},
+                    "period_start": {"type": "string", "description": "YYYY-MM-DD"},
+                    "period_end":   {"type": "string", "description": "YYYY-MM-DD"},
+                    "conversion_types": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "e.g. ['opportunity_created', 'purchase']",
+                    },
+                    "max_channels": {"type": "integer", "description": "Cap on channels (default from settings)"},
+                    "max_paths":    {"type": "integer", "description": "Sample size cap (default from settings)"},
+                },
+                "required": ["run_id", "period_start", "period_end"],
+            },
+        },
+        {
+            "name": "run_markov_model",
+            "description": (
+                "Compute Markov chain attribution — transition-matrix based model. "
+                "Each channel's credit is proportional to its removal effect: "
+                "the drop in overall conversion probability when that channel is removed. "
+                "Faster than Shapley for many channels. Good for long B2B paths. "
+                "Writes results to attribution_results and attribution_channel_summary."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "run_id":       {"type": "string"},
+                    "period_start": {"type": "string", "description": "YYYY-MM-DD"},
+                    "period_end":   {"type": "string", "description": "YYYY-MM-DD"},
+                    "conversion_types": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "max_paths": {"type": "integer", "description": "Sample size cap (default from settings)"},
+                },
+                "required": ["run_id", "period_start", "period_end"],
             },
         },
         {
@@ -653,6 +705,52 @@ class AnalystAgent(BaseAgent):
         errors = bq.insert_rows("analyst_insights", [row])
         log.info("analyst.insight_written", insight_id=insight_id, type=insight_type)
         return {"insight_id": insight_id, "errors": len(errors)}
+
+    def _tool_run_shapley_model(
+        self,
+        run_id: str,
+        period_start: str,
+        period_end: str,
+        conversion_types: list[str] | None = None,
+        max_channels: int | None = None,
+        max_paths: int | None = None,
+    ) -> dict:
+        from tools.attribution_models import load_paths, compute_shapley, write_model_results
+        max_ch  = max_channels or settings.shapley_max_channels
+        max_p   = max_paths    or settings.shapley_max_paths
+
+        log.info("analyst.shapley_start", run_id=run_id, period=f"{period_start}→{period_end}")
+        paths = load_paths(period_start, period_end, conversion_types, max_p)
+        if not paths:
+            return {"error": "No conversion paths found for the specified period and conversion types."}
+
+        weights = compute_shapley(paths, max_channels=max_ch)
+        result  = write_model_results(run_id, "shapley_value", period_start, period_end, paths, weights)
+
+        log.info("analyst.shapley_complete", run_id=run_id, paths=len(paths))
+        return result
+
+    def _tool_run_markov_model(
+        self,
+        run_id: str,
+        period_start: str,
+        period_end: str,
+        conversion_types: list[str] | None = None,
+        max_paths: int | None = None,
+    ) -> dict:
+        from tools.attribution_models import load_paths, compute_markov, write_model_results
+        max_p = max_paths or settings.shapley_max_paths
+
+        log.info("analyst.markov_start", run_id=run_id, period=f"{period_start}→{period_end}")
+        paths = load_paths(period_start, period_end, conversion_types, max_p)
+        if not paths:
+            return {"error": "No conversion paths found for the specified period and conversion types."}
+
+        weights = compute_markov(paths)
+        result  = write_model_results(run_id, "markov_chain", period_start, period_end, paths, weights)
+
+        log.info("analyst.markov_complete", run_id=run_id, paths=len(paths))
+        return result
 
     def _tool_complete_attribution_run(
         self,

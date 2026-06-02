@@ -297,24 +297,48 @@ class OperatorAgent(BaseAgent):
         domains: list[str],
     ) -> dict:
         from tools.gmp_client import ApprovalRequiredError, dv360_push_audience_exclusion
+        from tools.meta_client import MetaAPIError, add_domains_to_exclusion_audience
+        from tools.linkedin_client import LinkedInAPIError, add_companies_to_segment
+
         try:
             if platform == "dv360":
                 result = dv360_push_audience_exclusion(advertiser_id, audience_list_id, domains)
+
+            elif platform == "meta":
+                result = add_domains_to_exclusion_audience(
+                    audience_id=audience_list_id,
+                    domains=domains,
+                )
+
+            elif platform == "linkedin":
+                result = add_companies_to_segment(
+                    segment_id=audience_list_id,
+                    company_domains=domains,
+                )
+
             else:
-                # Meta and LinkedIn platform adapters — stub for now
                 if settings.operator_require_approval:
-                    raise ApprovalRequiredError(f"Audience suppression on {platform} requires approval.")
-                result = {"status": f"{platform}_suppression_stub", "domains": len(domains)}
+                    raise ApprovalRequiredError(
+                        f"Audience suppression on {platform} requires approval. "
+                        "No direct API adapter is implemented for this platform yet."
+                    )
+                result = {
+                    "status": "queued",
+                    "platform": platform,
+                    "domains": len(domains),
+                    "note": f"Manual: add {len(domains)} domains to exclusion list in {platform} UI.",
+                }
 
             self._update_action_status(action_id, "executed")
+            log.info("operator.suppression_executed", platform=platform, domains=len(domains))
             return {**result, "action_id": action_id, "domain_count": len(domains), "platform": platform}
 
-        except ApprovalRequiredError as exc:
+        except (ApprovalRequiredError, MetaAPIError, LinkedInAPIError) as exc:
             return {
-                "action_id":  action_id,
-                "executed":   False,
-                "reason":     str(exc),
-                "next_step":  "Review pending approval in get_pending_approvals (MCP) or operator_pending_approvals (BQ).",
+                "action_id": action_id,
+                "executed":  False,
+                "reason":    str(exc),
+                "next_step": "Review pending approval in get_pending_approvals (MCP) or operator_pending_approvals (BQ).",
             }
 
     def _tool_reallocate_budget(
@@ -327,22 +351,75 @@ class OperatorAgent(BaseAgent):
         amount_usd: float,
     ) -> dict:
         from tools.gmp_client import ApprovalRequiredError, dv360_reallocate_budget, sa360_adjust_campaign_budget
+        from tools.meta_client import (
+            MetaAPIError,
+            get_campaign as meta_get_campaign,
+            update_campaign_daily_budget as meta_update_budget,
+        )
+        from tools.linkedin_client import (
+            LinkedInAPIError,
+            get_campaign as li_get_campaign,
+            update_campaign_daily_budget as li_update_budget,
+        )
+
         try:
             if platform == "dv360":
-                result = dv360_reallocate_budget(advertiser_id, source_entity_id, target_entity_id, amount_usd)
+                result = dv360_reallocate_budget(
+                    advertiser_id, source_entity_id, target_entity_id, amount_usd
+                )
+
             elif platform == "sa360":
                 result = sa360_adjust_campaign_budget(
                     settings.sa360_agency_id, advertiser_id, target_entity_id, amount_usd
                 )
+
+            elif platform == "meta":
+                source = meta_get_campaign(source_entity_id)
+                target = meta_get_campaign(target_entity_id)
+                source_current = int(source.get("daily_budget", 0))
+                target_current = int(target.get("daily_budget", 0))
+                amount_cents = int(amount_usd * 100)
+                r_source = meta_update_budget(source_entity_id, max(0, source_current - amount_cents))
+                r_target = meta_update_budget(target_entity_id, target_current + amount_cents)
+                result = {
+                    "platform": "meta",
+                    "source_campaign": r_source,
+                    "target_campaign": r_target,
+                    "amount_moved_usd": amount_usd,
+                }
+
+            elif platform == "linkedin":
+                source = li_get_campaign(source_entity_id)
+                target = li_get_campaign(target_entity_id)
+                source_current = float(source.get("dailyBudget", {}).get("amount", 0))
+                target_current = float(target.get("dailyBudget", {}).get("amount", 0))
+                r_source = li_update_budget(source_entity_id, max(10.0, source_current - amount_usd))
+                r_target = li_update_budget(target_entity_id, target_current + amount_usd)
+                result = {
+                    "platform": "linkedin",
+                    "source_campaign": r_source,
+                    "target_campaign": r_target,
+                    "amount_moved_usd": amount_usd,
+                }
+
             else:
                 if settings.operator_require_approval:
-                    raise ApprovalRequiredError(f"Budget reallocation on {platform} requires approval.")
-                result = {"status": f"{platform}_budget_stub", "amount_usd": amount_usd}
+                    raise ApprovalRequiredError(
+                        f"Budget reallocation on {platform} requires approval. "
+                        "No API adapter implemented for this platform yet."
+                    )
+                result = {
+                    "status": "queued",
+                    "platform": platform,
+                    "amount_usd": amount_usd,
+                    "note": f"Manual: move ${amount_usd} from {source_entity_id} to {target_entity_id} in {platform} UI.",
+                }
 
             self._update_action_status(action_id, "executed")
-            return {**result, "action_id": action_id, "platform": platform}
+            log.info("operator.budget_reallocated", platform=platform, amount_usd=amount_usd)
+            return {**result, "action_id": action_id}
 
-        except ApprovalRequiredError as exc:
+        except (ApprovalRequiredError, MetaAPIError, LinkedInAPIError, ValueError) as exc:
             return {
                 "action_id": action_id,
                 "executed":  False,
