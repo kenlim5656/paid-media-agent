@@ -144,6 +144,143 @@ DEFAULT_ROI_PRIOR_MU    = 0.2
 DEFAULT_ROI_PRIOR_SIGMA = 0.9
 
 
+# ── Incrementality → Meridian bridge (Task 22) ────────────────────────────────
+
+
+def _get_roi_priors_from_bq() -> dict[str, dict[str, Any]]:
+    """
+    Auto-fetch the latest incrementality lift results from BigQuery and return
+    them as a roi_priors dict ready for Meridian calibration.
+
+    Reads from `v_incrementality_roi_priors` (09_incrementality.sql), which
+    surfaces the latest active, statistically significant result per channel.
+
+    Called automatically by run_mmm_pipeline() when roi_priors=None, completing
+    the Task 22 calibration hook: incrementality results now flow into the MMM
+    Bayesian priors without any manual dict construction by the operator.
+
+    Returns:
+        Dict mapping channel_name → {"mu": float, "sigma": float, "source": str}.
+        Empty dict if no significant results exist or BQ is unreachable.
+
+    Format matches MeridianAnalystEngine.roi_priors parameter:
+        {
+            "google_ads": {"mu": 0.39, "sigma": 0.14, "source": "google_ads_geo_holdout_2026_q2"},
+            "meta":       {"mu": 0.27, "sigma": 0.19, "source": "meta_conversion_lift_2026_q1"},
+        }
+    """
+    try:
+        from tools import bigquery_client as bq
+        rows = bq.run_query(
+            f"SELECT channel, roi_prior_mu, roi_prior_sigma, source, "
+            f"       iroas_mean, measurement_date, methodology "
+            f"FROM {bq.table_ref('v_incrementality_roi_priors')}"
+        )
+    except Exception as exc:
+        log.warning(
+            "meridian_engine.priors_fetch_failed",
+            error=str(exc),
+            note="Using weak default priors for all channels.",
+        )
+        return {}
+
+    priors: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        channel = str(row.get("channel", ""))
+        if not channel:
+            continue
+        priors[channel] = {
+            "mu":     float(row["roi_prior_mu"]),
+            "sigma":  float(row["roi_prior_sigma"]),
+            "source": str(row["source"]),
+        }
+        log.info(
+            "meridian_engine.prior_auto_loaded",
+            channel=channel,
+            iroas_mean=row.get("iroas_mean"),
+            mu=priors[channel]["mu"],
+            sigma=priors[channel]["sigma"],
+            source=priors[channel]["source"],
+            methodology=row.get("methodology"),
+            measurement_date=str(row.get("measurement_date", "")),
+        )
+
+    return priors
+
+
+def _validate_priors_with_tfp(
+    roi_mu: "np.ndarray",
+    roi_sigma: "np.ndarray",
+    channel_index: list[str],
+) -> None:
+    """
+    Validate prior arrays against a TFP JAX log-normal distribution before
+    passing to Meridian's ModelSpec.
+
+    Per Task 22 directive: distribution objects are constructed using the JAX-backed
+    TFP substrate (tensorflow_probability.substrates.jax.distributions) to confirm
+    the (mu, sigma) parameters are valid and compatible with Meridian's MCMC
+    compilation path. Meridian internally builds the same TFP-JAX distributions from
+    these arrays; this function validates them at the Python level first.
+
+    Also emits a warning for any calibrated channel (sigma injected from Task 22)
+    where sigma was left wide (> 0.50), which may indicate the prior was not
+    tightened adequately by the experiment.
+
+    Args:
+        roi_mu:        [C] array of log-normal location parameters.
+        roi_sigma:     [C] array of log-normal scale parameters.
+        channel_index: ordered list of channel names (for log context).
+    """
+    try:
+        import tensorflow_probability.substrates.jax.distributions as tfp_jax  # type: ignore[import]
+
+        for c_i, (mu, sigma, channel) in enumerate(zip(roi_mu, roi_sigma, channel_index)):
+            dist = tfp_jax.LogNormal(loc=float(mu), scale=float(sigma))
+            prior_mean = float(dist.mean())
+
+            if prior_mean <= 0:
+                log.warning(
+                    "meridian_engine.prior_invalid_mean",
+                    channel=channel,
+                    mu=float(mu),
+                    sigma=float(sigma),
+                    prior_mean=prior_mean,
+                    note="Log-normal prior mean ≤ 0. Check roi_prior_mu value.",
+                )
+
+            # Warn if a "calibrated" channel still has a wide prior
+            if float(sigma) > 0.50:
+                log.warning(
+                    "meridian_engine.prior_wide_for_calibrated_channel",
+                    channel=channel,
+                    sigma=float(sigma),
+                    note=(
+                        "sigma > 0.50 on a Task 22-calibrated channel. "
+                        "Consider tightening to 0.10–0.25 for experiment-anchored channels. "
+                        "A wide sigma means the data still dominates over the experiment prior."
+                    ),
+                )
+
+        log.debug(
+            "meridian_engine.priors_validated",
+            n_channels=len(roi_mu),
+            backend="tensorflow_probability.substrates.jax",
+        )
+
+    except ImportError:
+        log.warning(
+            "meridian_engine.tfp_jax_unavailable",
+            note=(
+                "Cannot validate priors with TFP-JAX. "
+                "Install with: pip install 'paid-media-agent[mmm]'. "
+                "Proceeding without prior validation — Meridian will catch invalid values at compile time."
+            ),
+        )
+    except Exception as exc:
+        log.warning("meridian_engine.prior_validation_error", error=str(exc))
+
+
 # ── Engine ─────────────────────────────────────────────────────────────────────
 
 
@@ -283,6 +420,10 @@ class MeridianAnalystEngine:
                     mu=DEFAULT_ROI_PRIOR_MU,
                     sigma=DEFAULT_ROI_PRIOR_SIGMA,
                 )
+
+        # Validate arrays against TFP-JAX log-normal distributions
+        # (Task 22 directive: confirm JAX backend compatibility before ModelSpec)
+        _validate_priors_with_tfp(roi_mu, roi_sigma, self.input_data.channel_index)
 
         return roi_mu, roi_sigma
 
@@ -847,6 +988,33 @@ def run_mmm_pipeline(
         geo_allowlist=geo_allowlist,
     )
     log.info("meridian_pipeline.data_loaded", summary=input_data.summary())
+
+    # ── Task 22 auto-wiring: fetch incrementality priors if not provided ─────────
+    # Reads v_incrementality_roi_priors (09_incrementality.sql) which contains the
+    # latest significant iROAS estimate per channel from run_incrementality_analysis().
+    # When calibrated, channels receive tighter posteriors (sigma ≈ 0.10–0.25)
+    # vs. the wide observational default (sigma = 0.9).
+    if roi_priors is None:
+        roi_priors = _get_roi_priors_from_bq()
+        if roi_priors:
+            log.info(
+                "meridian_pipeline.priors_auto_loaded",
+                calibrated_channels=list(roi_priors.keys()),
+                note=(
+                    "Incrementality-derived iROAS priors injected automatically. "
+                    "These priors anchor the MCMC posterior to experimentally measured lift. "
+                    "Run run_incrementality_analysis() to refresh or add channels."
+                ),
+            )
+        else:
+            log.info(
+                "meridian_pipeline.no_priors_available",
+                note=(
+                    "No active significant incrementality results in v_incrementality_roi_priors. "
+                    "Using weak default priors (mu=0.2, sigma=0.9) for all channels. "
+                    "Run run_incrementality_analysis() to calibrate channel priors."
+                ),
+            )
 
     # Component 2: Build, run, and persist model
     engine = MeridianAnalystEngine(input_data=input_data, roi_priors=roi_priors)

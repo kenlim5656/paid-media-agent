@@ -818,6 +818,27 @@ def push_domain_suppression(
 
     Returns status dict with either upload result or manual-action instructions.
     """
+    # ── Resolve crm_emails_by_domain ──────────────────────────────────────────
+    # If not passed explicitly, auto-fetch from crm_leads_staging via crm_client.
+    # This resolves the Task 22 TODO: CRM lookup is now wired automatically.
+    if crm_emails_by_domain is None:
+        try:
+            from tools.crm_client import get_crm_emails_by_domain
+            crm_emails_by_domain = get_crm_emails_by_domain(domains=domains)
+            log.info(
+                "tiktok.suppression.crm_auto_fetched",
+                advertiser_id=advertiser_id,
+                domains=len(domains),
+                domains_matched=len(crm_emails_by_domain),
+            )
+        except Exception as exc:
+            log.warning(
+                "tiktok.suppression.crm_fetch_failed",
+                error=str(exc),
+                note="Falling back to manual suppression workflow.",
+            )
+            crm_emails_by_domain = {}
+
     if crm_emails_by_domain:
         # Gather emails for the requested domains
         raw_emails: list[str] = []
@@ -830,10 +851,11 @@ def push_domain_suppression(
                 "platform": "tiktok",
                 "advertiser_id": advertiser_id,
                 "audience_id": audience_id,
-                "domains": len(domains),
+                "domains_requested": len(domains),
                 "note": (
-                    "CRM data provided but no emails matched the given domains. "
-                    "Verify domain keys in crm_emails_by_domain match the domains list exactly."
+                    "CRM data found but no emails matched the given domains. "
+                    "Verify domain keys in crm_emails_by_domain match the domains list exactly. "
+                    "Run crm_client.summarize_domain_coverage(domains) to diagnose coverage gaps."
                 ),
             }
 
@@ -845,7 +867,7 @@ def push_domain_suppression(
             "domains": len(domains),
         }
 
-    # No CRM data — return manual fallback
+    # No CRM data available — return manual fallback with clear instructions
     log.warning(
         "tiktok.suppression.no_crm_data",
         advertiser_id=advertiser_id,
@@ -861,8 +883,8 @@ def push_domain_suppression(
         "domain_list": domains,
         "note": (
             "TikTok does not support direct domain-based audience matching. "
-            "To suppress these domains: look up associated employee emails in your CRM, "
-            "then re-call push_domain_suppression with crm_emails_by_domain populated. "
-            "CRM email lookup will be wired automatically in Task 22/24."
+            "No CRM email records were found for the requested domains in crm_leads_staging. "
+            "To resolve: (1) ensure crm_leads_staging is populated for these domains, "
+            "or (2) pass crm_emails_by_domain explicitly with employee emails from your CRM."
         ),
     }

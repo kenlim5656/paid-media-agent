@@ -838,6 +838,27 @@ def push_domain_suppression(
         Returns a queued status with a note to use placement exclusions or manually
         upload a customer list from the UI.
     """
+    # ── Resolve crm_emails_by_domain ──────────────────────────────────────────
+    # If not passed explicitly, auto-fetch from crm_leads_staging via crm_client.
+    # This resolves the Task 22 TODO: CRM lookup is now wired automatically.
+    if crm_emails_by_domain is None:
+        try:
+            from tools.crm_client import get_crm_emails_by_domain
+            crm_emails_by_domain = get_crm_emails_by_domain(domains=domains)
+            log.info(
+                "google_ads.suppression.crm_auto_fetched",
+                customer_id=customer_id,
+                domains=len(domains),
+                domains_matched=len(crm_emails_by_domain),
+            )
+        except Exception as exc:
+            log.warning(
+                "google_ads.suppression.crm_fetch_failed",
+                error=str(exc),
+                note="Falling back to manual suppression workflow.",
+            )
+            crm_emails_by_domain = {}
+
     if crm_emails_by_domain:
         all_emails: list[str] = []
         for domain in domains:
@@ -846,24 +867,31 @@ def push_domain_suppression(
         if not all_emails:
             return {
                 "status": "no_emails",
-                "domains": domains,
-                "note": "Domains found but no CRM emails mapped. Add emails to crm_emails_by_domain.",
+                "platform": "google_ads",
+                "domains_requested": len(domains),
+                "note": (
+                    "CRM data found but no emails matched the given domains. "
+                    "Verify domain keys in crm_emails_by_domain match the domains list exactly. "
+                    "Run crm_client.summarize_domain_coverage(domains) to diagnose coverage gaps."
+                ),
             }
 
         hashed = hash_emails_for_customer_match(all_emails)
         return add_emails_to_customer_match(customer_id, user_list_resource_name, hashed)
 
-    # Fallback: no emails available
+    # Fallback: no emails available in CRM for these domains
     log.warning("google_ads.domain_suppression_fallback", domains=len(domains))
     return {
         "status": "queued_manual",
         "platform": "google_ads",
-        "domains": domains,
+        "domains_requested": len(domains),
+        "domain_list": domains,
         "note": (
             "Google Ads does not support domain-based Customer Match directly. "
-            "To suppress these accounts: (1) Export employee emails from CRM for each domain, "
-            "pass as crm_emails_by_domain; or (2) Manually upload a customer list in "
-            "Google Ads UI → Audience Manager → Customer Match."
+            "No CRM email records found for the requested domains in crm_leads_staging. "
+            "To resolve: (1) ensure crm_leads_staging is populated for these domains, "
+            "or (2) pass crm_emails_by_domain explicitly; "
+            "or (3) manually upload a customer list via Google Ads UI → Audience Manager."
         ),
     }
 

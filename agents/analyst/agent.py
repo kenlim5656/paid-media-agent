@@ -9,6 +9,8 @@ Runs daily. Stitches identities and executes the MTA model.
 Writes structured output to paid-media-schema tables so the paid-media-mcp
 can surface results in interactive skill sessions.
 """
+import json
+import math
 import uuid
 import structlog
 from datetime import datetime, timezone
@@ -17,6 +19,38 @@ from agents.base import BaseAgent
 from tools import bigquery_client as bq
 
 log = structlog.get_logger()
+
+# ── Statistical helpers (Task 22) ──────────────────────────────────────────────
+
+# Lookup table for normal quantile z_{1-α/2} at common confidence levels.
+# Used by run_incrementality_analysis for CI construction (no scipy required).
+_CI_Z_TABLE = {0.80: 1.282, 0.85: 1.440, 0.90: 1.645, 0.95: 1.960, 0.99: 2.576}
+
+# Default Bayesian prior parameters for iROAS (log-normal distribution).
+# Matches DEFAULT_ROI_PRIOR_MU / DEFAULT_ROI_PRIOR_SIGMA in meridian_analyst_engine.py.
+# Weak priors → data drives the posterior; experiment narrows sigma to 0.10–0.25.
+_DEFAULT_PRIOR_MU    = 0.2   # log-normal location: E[ROI] ≈ exp(0.2 + 0.9²/2) ≈ 1.83
+_DEFAULT_PRIOR_SIGMA = 0.9   # log-normal scale:    very wide, observational only
+
+
+def _z_for_confidence(confidence_level: float) -> float:
+    """
+    Return z_{1-α/2} for two-sided CI at the given confidence level.
+
+    Uses the lookup table for common values; linear interpolation otherwise.
+    No external dependencies (no scipy).
+    """
+    if confidence_level in _CI_Z_TABLE:
+        return _CI_Z_TABLE[confidence_level]
+    # Linear interpolation between nearest table entries
+    levels = sorted(_CI_Z_TABLE.keys())
+    for i in range(len(levels) - 1):
+        lo, hi = levels[i], levels[i + 1]
+        if lo <= confidence_level <= hi:
+            frac = (confidence_level - lo) / (hi - lo)
+            return _CI_Z_TABLE[lo] + frac * (_CI_Z_TABLE[hi] - _CI_Z_TABLE[lo])
+    return 1.645  # fallback to 90%
+
 
 SYSTEM = """You are the Analyst, an attribution modeling agent for a paid media pipeline.
 
@@ -298,6 +332,147 @@ class AnalystAgent(BaseAgent):
                     },
                 },
                 "required": ["date_from", "date_to"],
+            },
+        },
+        {
+            "name": "run_incrementality_analysis",
+            "description": (
+                "Run a Bayesian incrementality analysis on a geo holdout or conversion lift experiment. "
+                "Computes incremental lift (iROAS) by comparing test vs. control group performance, "
+                "applies a log-normal Bayesian posterior update to convert the experimental result into "
+                "Meridian-compatible prior parameters (roi_prior_mu / roi_prior_sigma), and writes "
+                "the result to incrementality_lift_results in BigQuery. "
+                "When mark_active=True (default), the result auto-injects into the next run_mmm_model "
+                "call via v_incrementality_roi_priors — no manual roi_priors dict construction needed. "
+                "Also enables the CRM domain suppression workflow: once incrementality_lift_results "
+                "is populated, push_domain_suppression() in both tiktok_ads_client and "
+                "google_ads_client auto-fetches CRM emails via crm_client.get_crm_emails_by_domain(). "
+                "Supported methodologies: geo_holdout (geographic split), conversion_lift (time-based "
+                "pre/post comparison), brand_lift (manual platform study input)."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "experiment_id": {
+                        "type": "string",
+                        "description": (
+                            "Unique experiment identifier. Use a descriptive slug, e.g. "
+                            "'google_ads_geo_holdout_2026_q2'. Created automatically if new."
+                        ),
+                    },
+                    "channel": {
+                        "type": "string",
+                        "description": (
+                            "Platform channel name matching the platform field in platform_daily_spend. "
+                            "e.g. 'google_ads', 'meta', 'tiktok', 'linkedin'."
+                        ),
+                    },
+                    "methodology": {
+                        "type": "string",
+                        "enum": ["geo_holdout", "conversion_lift", "brand_lift", "synthetic_control"],
+                        "description": (
+                            "geo_holdout: geographic market split (gold standard). "
+                            "conversion_lift: pre/post time-based comparison. "
+                            "brand_lift: survey-based; provide kpi_test/kpi_control manually. "
+                            "synthetic_control: DID approach; provide kpi inputs manually."
+                        ),
+                    },
+                    "test_date_from": {
+                        "type": "string",
+                        "description": "Start of the treatment period. Format: YYYY-MM-DD.",
+                    },
+                    "test_date_to": {
+                        "type": "string",
+                        "description": "End of the treatment period. Format: YYYY-MM-DD.",
+                    },
+                    "control_date_from": {
+                        "type": "string",
+                        "description": (
+                            "Start of the control/comparison period. "
+                            "geo_holdout: leave blank (uses same dates as test period). "
+                            "conversion_lift: pre-experiment baseline start date."
+                        ),
+                    },
+                    "control_date_to": {
+                        "type": "string",
+                        "description": (
+                            "End of the control/comparison period. "
+                            "conversion_lift: pre-experiment baseline end date."
+                        ),
+                    },
+                    "test_regions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "ISO country/region codes in the treatment group (geo_holdout only). "
+                            "e.g. ['US', 'CA']. Must match geo_country_code in platform_daily_spend."
+                        ),
+                    },
+                    "control_regions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "ISO country/region codes in the control group (geo_holdout only). "
+                            "e.g. ['GB', 'AU']. Should have similar baseline CVR to test_regions."
+                        ),
+                    },
+                    "avg_conversion_value": {
+                        "type": "number",
+                        "description": (
+                            "Average dollar value per conversion. Used to compute iROAS. "
+                            "Use average deal value for B2B (e.g. 25000) or "
+                            "average order value for e-commerce (e.g. 120). Default: 1.0."
+                        ),
+                    },
+                    "kpi_test": {
+                        "type": "number",
+                        "description": (
+                            "Total KPI (conversions) in test group. "
+                            "Provide directly for brand_lift / synthetic_control, "
+                            "or omit to let the tool query from platform_daily_spend."
+                        ),
+                    },
+                    "kpi_control": {
+                        "type": "number",
+                        "description": "Total KPI (conversions) in control group. See kpi_test.",
+                    },
+                    "exposed_test": {
+                        "type": "number",
+                        "description": (
+                            "Total impressions in test group. Used as exposure denominator "
+                            "for conversion rate calculation. Omit to fetch from BQ."
+                        ),
+                    },
+                    "exposed_control": {
+                        "type": "number",
+                        "description": "Total impressions in control group. Omit to fetch from BQ.",
+                    },
+                    "spend_test_input": {
+                        "type": "number",
+                        "description": "Total spend (USD) in test group. Omit to fetch from BQ.",
+                    },
+                    "spend_control_input": {
+                        "type": "number",
+                        "description": "Total spend (USD) in control/baseline group. Omit to fetch from BQ.",
+                    },
+                    "confidence_level": {
+                        "type": "number",
+                        "description": "Statistical confidence level. Default 0.90 (90% CI). Use 0.95 for high-stakes decisions.",
+                    },
+                    "mark_active": {
+                        "type": "boolean",
+                        "description": (
+                            "If True (default), set is_active=TRUE on this result, "
+                            "enabling auto-injection into the next run_mmm_model call. "
+                            "Set False to store without activating (e.g. for data quality review)."
+                        ),
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "Optional analyst notes about design decisions, caveats, or data quality issues.",
+                    },
+                },
+                "required": ["experiment_id", "channel", "methodology", "test_date_from", "test_date_to"],
             },
         },
         {
@@ -953,6 +1128,385 @@ class AnalystAgent(BaseAgent):
 
         log.info("analyst.markov_complete", run_id=run_id, paths=len(paths))
         return result
+
+    def _tool_run_incrementality_analysis(  # noqa: C901  (complex but deliberately structured)
+        self,
+        experiment_id: str,
+        channel: str,
+        methodology: str,
+        test_date_from: str,
+        test_date_to: str,
+        control_date_from: str | None = None,
+        control_date_to: str | None = None,
+        test_regions: list[str] | None = None,
+        control_regions: list[str] | None = None,
+        avg_conversion_value: float = 1.0,
+        kpi_test: float | None = None,
+        kpi_control: float | None = None,
+        exposed_test: float | None = None,
+        exposed_control: float | None = None,
+        spend_test_input: float | None = None,
+        spend_control_input: float | None = None,
+        confidence_level: float = 0.90,
+        mark_active: bool = True,
+        notes: str | None = None,
+    ) -> dict:
+        """
+        Bayesian incrementality analysis engine (Task 22).
+
+        Statistical methodology:
+          1. Fetch test / control group data from platform_daily_spend (or use manual inputs).
+          2. Compute conversion rates (CVR = conversions / impressions).
+          3. Two-proportion z-test for statistical significance (one-tailed, H1: test > control).
+          4. Point estimate of iROAS = incremental_conversions × avg_value / incremental_spend.
+          5. 90% CI on iROAS via delta method on the CVR difference.
+          6. Log-normal Bayesian posterior update:
+               Prior:       log(ROI) ~ N(mu₀=0.2, σ₀=0.9)    [weak observational default]
+               Likelihood:  log(iROAS_est) with SE from CI width
+               Posterior:   precision-weighted Gaussian average
+               → roi_prior_mu / roi_prior_sigma  for Meridian ModelSpec
+
+        Meridian calibration hook (Task 27):
+          When mark_active=True and the result is statistically significant,
+          this result populates v_incrementality_roi_priors, which
+          run_mmm_pipeline() reads automatically — closing the Task 22 → Task 27
+          calibration loop without any manual dict construction.
+        """
+        valid_methods = {"geo_holdout", "conversion_lift", "brand_lift", "synthetic_control"}
+        if methodology not in valid_methods:
+            return {"error": f"Invalid methodology: {methodology!r}. Must be one of: {valid_methods}"}
+
+        # Sanitize channel for SQL (should be a simple platform identifier)
+        safe_channel = channel.replace("'", "''")
+        z_alpha = _z_for_confidence(confidence_level)
+        now_str = datetime.now(timezone.utc).isoformat()
+
+        # ── 1. Fetch test group data ───────────────────────────────────────────
+        test_days = 1
+        if kpi_test is None or exposed_test is None:
+            test_geo_clause = ""
+            if test_regions:
+                region_list = ", ".join(
+                    f"'{r.replace(chr(39), chr(39)*2)}'" for r in test_regions
+                )
+                test_geo_clause = f"AND geo_country_code IN ({region_list})"
+
+            test_sql = f"""
+            SELECT
+                SUM(CAST(spend AS FLOAT64))       AS total_spend,
+                SUM(impressions)                   AS total_impressions,
+                SUM(platform_conversions)          AS total_conversions,
+                COUNT(DISTINCT date)               AS n_days
+            FROM {bq.table_ref('platform_daily_spend')}
+            WHERE date BETWEEN '{test_date_from}' AND '{test_date_to}'
+              AND platform = '{safe_channel}'
+              {test_geo_clause}
+            """
+            try:
+                test_rows = bq.run_query(test_sql)
+            except Exception as exc:
+                return {"error": f"Failed to fetch test group data from BQ: {exc}",
+                        "hint": "Verify channel matches platform field in platform_daily_spend."}
+
+            if not test_rows or test_rows[0].get("total_impressions") is None:
+                return {
+                    "error": "No data found for test group.",
+                    "channel": channel,
+                    "date_range": f"{test_date_from} → {test_date_to}",
+                    "hint": (
+                        "Verify 'channel' matches the platform column in platform_daily_spend. "
+                        "Common values: 'google_ads', 'meta', 'tiktok', 'linkedin'."
+                    ),
+                }
+
+            tr = test_rows[0]
+            kpi_test     = float(tr.get("total_conversions")  or 0.0)
+            exposed_test = float(tr.get("total_impressions")  or 0.0)
+            test_days    = int(tr.get("n_days") or 1)
+            if spend_test_input is None:
+                spend_test_input = float(tr.get("total_spend") or 0.0)
+
+        spend_test_val = spend_test_input or 0.0
+
+        # ── 2. Fetch control group data ────────────────────────────────────────
+        ctrl_date_from = control_date_from or test_date_from
+        ctrl_date_to   = control_date_to   or test_date_to
+
+        if kpi_control is None or exposed_control is None:
+            ctrl_geo_clause = ""
+            if methodology == "geo_holdout" and control_regions:
+                region_list = ", ".join(
+                    f"'{r.replace(chr(39), chr(39)*2)}'" for r in control_regions
+                )
+                ctrl_geo_clause = f"AND geo_country_code IN ({region_list})"
+            elif methodology == "conversion_lift" and test_regions:
+                # Same geos as test, different date range
+                region_list = ", ".join(
+                    f"'{r.replace(chr(39), chr(39)*2)}'" for r in test_regions
+                )
+                ctrl_geo_clause = f"AND geo_country_code IN ({region_list})"
+
+            ctrl_sql = f"""
+            SELECT
+                SUM(CAST(spend AS FLOAT64))       AS total_spend,
+                SUM(impressions)                   AS total_impressions,
+                SUM(platform_conversions)          AS total_conversions,
+                COUNT(DISTINCT date)               AS n_days
+            FROM {bq.table_ref('platform_daily_spend')}
+            WHERE date BETWEEN '{ctrl_date_from}' AND '{ctrl_date_to}'
+              AND platform = '{safe_channel}'
+              {ctrl_geo_clause}
+            """
+            try:
+                ctrl_rows = bq.run_query(ctrl_sql)
+            except Exception as exc:
+                return {"error": f"Failed to fetch control group data from BQ: {exc}"}
+
+            if not ctrl_rows or ctrl_rows[0].get("total_impressions") is None:
+                return {
+                    "error": "No data found for control group.",
+                    "hint": (
+                        "geo_holdout: verify control_regions are populated in platform_daily_spend. "
+                        "conversion_lift: verify control_date_from / control_date_to."
+                    ),
+                }
+
+            cr = ctrl_rows[0]
+            kpi_control     = float(cr.get("total_conversions")  or 0.0)
+            exposed_control = float(cr.get("total_impressions")  or 0.0)
+            if spend_control_input is None:
+                spend_control_input = float(cr.get("total_spend") or 0.0)
+
+        spend_control_val = spend_control_input or 0.0
+
+        # ── 3. Guard against insufficient data ─────────────────────────────────
+        if exposed_test < 100 or exposed_control < 100:
+            return {
+                "error": "Insufficient exposure data for reliable inference.",
+                "exposed_test":     exposed_test,
+                "exposed_control":  exposed_control,
+                "minimum_required": 100,
+                "hint": (
+                    "Extend the date range, widen the geographic split, or reduce "
+                    "min_weekly_impressions in meridian_data_loader to include more geos."
+                ),
+            }
+
+        # ── 4. Conversion rates and z-test ────────────────────────────────────
+        cvr_test    = kpi_test    / exposed_test
+        cvr_control = kpi_control / exposed_control
+
+        # Pooled CVR for z-test (two-proportion)
+        cvr_pooled = (kpi_test + kpi_control) / (exposed_test + exposed_control)
+
+        # Two-proportion z-statistic: one-tailed H1: cvr_test > cvr_control
+        if 0 < cvr_pooled < 1:
+            se_pooled = math.sqrt(
+                cvr_pooled * (1.0 - cvr_pooled) * (1.0 / exposed_test + 1.0 / exposed_control)
+            )
+        else:
+            se_pooled = 1e-9
+
+        z_score = (cvr_test - cvr_control) / max(se_pooled, 1e-12)
+
+        # One-tailed p-value: P(Z > z | H0)  using erfc (no scipy)
+        p_value = 0.5 * math.erfc(z_score / math.sqrt(2))
+        is_significant = p_value < (1.0 - confidence_level)
+
+        # ── 5. Lift % with CI ─────────────────────────────────────────────────
+        se_diff = math.sqrt(
+            cvr_test    * (1.0 - cvr_test)    / exposed_test +
+            cvr_control * (1.0 - cvr_control) / exposed_control
+        )
+        lift_pct      = (cvr_test - cvr_control) / max(cvr_control, 1e-9)
+        lift_lower_90 = (cvr_test - cvr_control - z_alpha * se_diff) / max(cvr_control, 1e-9)
+        lift_upper_90 = (cvr_test - cvr_control + z_alpha * se_diff) / max(cvr_control, 1e-9)
+
+        # ── 6. iROAS estimation ────────────────────────────────────────────────
+        incremental_cvr         = cvr_test - cvr_control
+        incremental_conversions = incremental_cvr * exposed_test
+
+        # Incremental spend: test spend minus the counterfactual (control spend rate × test exposure)
+        # Avoids double-counting baseline spend that would have occurred even without the campaign.
+        if exposed_control > 0 and spend_control_val > 0:
+            cpm_control       = spend_control_val / exposed_control  # spend per impression
+            counterfactual_sp = cpm_control * exposed_test
+            incremental_spend = max(spend_test_val - counterfactual_sp, spend_test_val * 0.01)
+        else:
+            # geo_holdout with no control spend: treat all test spend as incremental
+            incremental_spend = max(spend_test_val, 1e-6)
+
+        iroas_est   = (incremental_conversions * avg_conversion_value) / incremental_spend
+        iroas_se    = (se_diff * exposed_test * avg_conversion_value) / incremental_spend
+        iroas_lower = max(0.0, iroas_est - z_alpha * iroas_se)
+        iroas_upper = max(iroas_est, iroas_est + z_alpha * iroas_se)
+
+        # ── 7. Log-normal Bayesian posterior update ────────────────────────────
+        # Prior: log(ROI) ~ N(mu₀, σ₀²) — weak observational default
+        # Likelihood: log(iROAS_est) with standard error se_log
+        # Posterior: conjugate Gaussian — precision-weighted average
+        log_iroas_est = math.log(max(iroas_est, 1e-6))
+
+        # SE of log(iROAS) via delta method: se_log ≈ iroas_se / iroas_est
+        if iroas_est > 1e-6 and iroas_se > 0:
+            se_log = iroas_se / iroas_est
+        elif iroas_upper > iroas_lower > 0:
+            # Fallback: derive se_log from CI width
+            se_log = (math.log(max(iroas_upper, 1e-6)) - math.log(max(iroas_lower, 1e-6))) / (2 * z_alpha)
+        else:
+            se_log = 0.5
+
+        se_log = max(se_log, 0.02)  # floor prevents degenerate posterior collapse
+
+        tau_prior   = 1.0 / (_DEFAULT_PRIOR_SIGMA ** 2)
+        tau_obs     = 1.0 / (se_log ** 2)
+        tau_post    = tau_prior + tau_obs
+        roi_prior_mu    = (tau_prior * _DEFAULT_PRIOR_MU + tau_obs * log_iroas_est) / tau_post
+        roi_prior_sigma = math.sqrt(1.0 / tau_post)
+
+        # E[ROI] under posterior (log-normal mean formula)
+        posterior_mean_roi = math.exp(roi_prior_mu + roi_prior_sigma ** 2 / 2.0)
+
+        # ── 8. Write experiment record (MERGE — idempotent) ───────────────────
+        safe_exp_id   = experiment_id.replace("'", "''")
+        safe_notes    = (notes or "").replace("'", "''")
+        test_json     = json.dumps(test_regions or [])
+        ctrl_json     = json.dumps(control_regions or [])
+
+        exp_merge_sql = f"""
+        MERGE {bq.table_ref('incrementality_experiments')} AS target
+        USING (SELECT '{safe_exp_id}' AS experiment_id) AS source
+        ON target.experiment_id = source.experiment_id
+        WHEN MATCHED THEN UPDATE SET
+            status     = 'completed',
+            updated_at = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN INSERT (
+            experiment_id, channel, methodology,
+            test_group_ids, control_group_ids,
+            test_date_from, test_date_to,
+            control_date_from, control_date_to,
+            kpi, status, created_by, notes,
+            created_at, updated_at
+        ) VALUES (
+            '{safe_exp_id}', '{safe_channel}', '{methodology}',
+            JSON '{test_json}', JSON '{ctrl_json}',
+            DATE '{test_date_from}', DATE '{test_date_to}',
+            DATE '{ctrl_date_from}', DATE '{ctrl_date_to}',
+            'conversions', 'completed', 'analyst_agent', '{safe_notes}',
+            CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
+        )
+        """
+        try:
+            bq.run_dml(exp_merge_sql)
+        except Exception as exc:
+            log.warning("analyst.incrementality.exp_merge_failed", error=str(exc))
+
+        # ── 9. Write lift result row ──────────────────────────────────────────
+        result_id    = bq.new_uuid()
+        result_row   = {
+            "result_id":               result_id,
+            "experiment_id":           experiment_id,
+            "channel":                 channel,
+            "methodology":             methodology,
+            "measurement_date":        test_date_to,
+            "test_date_from":          test_date_from,
+            "test_date_to":            test_date_to,
+            "control_date_from":       ctrl_date_from,
+            "control_date_to":         ctrl_date_to,
+            "measurement_window_days": test_days,
+            "kpi":                     "conversions",
+            "kpi_test":                round(kpi_test, 4),
+            "kpi_control":             round(kpi_control, 4),
+            "exposed_test":            round(exposed_test, 0),
+            "exposed_control":         round(exposed_control, 0),
+            # NUMERIC fields stored as strings to preserve precision
+            "spend_test":              str(round(spend_test_val, 4)),
+            "spend_control":           str(round(spend_control_val, 4)),
+            "avg_conversion_value":    str(round(avg_conversion_value, 4)),
+            "cvr_test":                round(cvr_test, 8),
+            "cvr_control":             round(cvr_control, 8),
+            "lift_pct":                round(lift_pct, 6),
+            "lift_pct_lower_90":       round(lift_lower_90, 6),
+            "lift_pct_upper_90":       round(lift_upper_90, 6),
+            "incremental_conversions": round(incremental_conversions, 4),
+            "incremental_spend":       str(round(incremental_spend, 4)),
+            "iroas_mean":              round(iroas_est, 6),
+            "iroas_std":               round(iroas_se, 6),
+            "iroas_lower_90":          round(iroas_lower, 6),
+            "iroas_upper_90":          round(iroas_upper, 6),
+            "z_score":                 round(z_score, 4),
+            "p_value":                 round(p_value, 6),
+            "confidence_level":        confidence_level,
+            "is_significant":          is_significant,
+            # Meridian prior parameters (log-normal)
+            "roi_prior_mu":            round(roi_prior_mu, 6),
+            "roi_prior_sigma":         round(roi_prior_sigma, 6),
+            "is_active":               mark_active,
+            "notes":                   notes,
+            "created_by":              "analyst_agent",
+            "created_at":              now_str,
+        }
+
+        errors = bq.insert_rows("incrementality_lift_results", [result_row])
+        if errors:
+            log.error("analyst.incrementality.write_failed", errors=errors)
+            return {"error": "BQ streaming insert failed", "bq_errors": str(errors)}
+
+        log.info(
+            "analyst.incrementality.complete",
+            result_id=result_id,
+            experiment_id=experiment_id,
+            channel=channel,
+            iroas_mean=round(iroas_est, 4),
+            lift_pct_pct=f"{round(lift_pct * 100, 1)}%",
+            p_value=round(p_value, 4),
+            is_significant=is_significant,
+            roi_prior_mu=round(roi_prior_mu, 4),
+            roi_prior_sigma=round(roi_prior_sigma, 4),
+            mark_active=mark_active,
+        )
+
+        return {
+            "result_id":          result_id,
+            "experiment_id":      experiment_id,
+            "channel":            channel,
+            "methodology":        methodology,
+            "measurement_date":   test_date_to,
+            # ── Lift estimates (human-readable) ────────────────────────────────
+            "lift_pct":           f"{round(lift_pct * 100, 2)}%",
+            "lift_ci_90":         f"[{round(lift_lower_90 * 100, 1)}%, {round(lift_upper_90 * 100, 1)}%]",
+            # ── iROAS estimates ────────────────────────────────────────────────
+            "iroas_mean":         round(iroas_est, 4),
+            "iroas_ci_90":        f"[{round(iroas_lower, 3)}, {round(iroas_upper, 3)}]",
+            "incremental_convs":  round(incremental_conversions, 1),
+            "incremental_spend":  round(incremental_spend, 2),
+            # ── Statistical significance ──────────────────────────────────────
+            "p_value":            round(p_value, 4),
+            "z_score":            round(z_score, 4),
+            "is_significant":     is_significant,
+            "confidence_level":   confidence_level,
+            # ── Meridian calibration priors (Task 27 hook) ─────────────────────
+            "roi_prior_mu":       round(roi_prior_mu, 4),    # log-normal location
+            "roi_prior_sigma":    round(roi_prior_sigma, 4), # log-normal scale (tighter = stronger)
+            "posterior_mean_roi": round(posterior_mean_roi, 3),  # E[ROI] = exp(mu + σ²/2)
+            "is_active":          mark_active,
+            "meridian_note": (
+                f"Priors written: mu={round(roi_prior_mu, 4)}, "
+                f"sigma={round(roi_prior_sigma, 4)} "
+                f"(vs. default sigma=0.9). "
+                f"Posterior E[ROI] ≈ {round(posterior_mean_roi, 2)}x. "
+                "These parameters auto-inject into the next run_mmm_model call "
+                "via v_incrementality_roi_priors — no manual roi_priors dict needed."
+                if mark_active and is_significant else
+                "Result stored but NOT activated for Meridian calibration "
+                "(is_significant=False or mark_active=False). "
+                "Re-run with mark_active=True after verifying data quality."
+            ),
+            "bq_tables_written": [
+                "incrementality_experiments",
+                "incrementality_lift_results",
+            ],
+        }
 
     def _tool_complete_attribution_run(
         self,

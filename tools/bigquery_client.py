@@ -91,6 +91,16 @@ _TABLES: dict[str, str] = {
     "mmm_runs":                  "mmm_runs",
     "mmm_channel_contributions": "mmm_channel_contributions",
 
+    # ── Incrementality layer — tables (09_incrementality.sql) ─────────────────
+    # Written by agents/analyst/agent.py _tool_run_incrementality_analysis().
+    "incrementality_experiments":  "incrementality_experiments",
+    "incrementality_lift_results": "incrementality_lift_results",
+
+    # ── Incrementality layer — view (09_incrementality.sql) ──────────────────
+    # Latest significant lift result per channel, formatted for Meridian prior injection.
+    # Read by tools/meridian_analyst_engine._get_roi_priors_from_bq().
+    "v_incrementality_roi_priors": "v_incrementality_roi_priors",
+
     # ── Source / staging tables (org-defined, outside schema DDL) ─────────────
     # These are the raw source tables that the agents read from.
     # Names are configurable via settings but default to sensible values.
