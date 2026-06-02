@@ -26,6 +26,15 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "ruff>=0.8.0",
 ]
+# Google Ads API — Task 21
+# Large dependency tree (~100 MB). Install only on instances that run the Google Ads adapter.
+# Usage: pip install 'paid-media-agent[google_ads]'
+# Or individually: pip install 'google-ads>=24.1.0' 'google-auth-oauthlib>=1.2.0' pyyaml
+google_ads = [
+    "google-ads>=24.1.0",
+    "google-auth-oauthlib>=1.2.0",
+    "pyyaml>=6.0",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]

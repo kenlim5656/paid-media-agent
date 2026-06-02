@@ -2,7 +2,7 @@
 The Operator — Media Optimization Agent.
 Runs daily after the Analyst. Reads attribution_channel_summary and acts on insights.
 All write actions are logged to operator_action_log and operator_pending_approvals.
-Platform-agnostic: supports GMP, Meta, LinkedIn, TikTok via platform adapters.
+Platform-agnostic: supports GMP, Meta, LinkedIn, Google Ads, TikTok via platform adapters.
 """
 import structlog
 from datetime import datetime, timezone
@@ -99,17 +99,31 @@ class OperatorAgent(BaseAgent):
             "name": "push_audience_suppression",
             "description": (
                 "Add company domains to an audience exclusion list on a supported platform "
-                "(DV360, Meta, LinkedIn) to suppress top-of-funnel ads for accounts already "
-                "in open pipeline. Requires approval unless OPERATOR_REQUIRE_APPROVAL=false."
+                "(DV360, Meta, LinkedIn, Google Ads) to suppress top-of-funnel ads for "
+                "accounts already in open pipeline. "
+                "Google Ads: uses Customer Match — pass audience_list_id as the user_list "
+                "resource_name (e.g. 'customers/123/userLists/456'). "
+                "Requires approval unless OPERATOR_REQUIRE_APPROVAL=false."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "action_id":       {"type": "string", "description": "From log_proposed_action"},
-                    "platform":        {"type": "string", "enum": ["dv360", "meta", "linkedin"], "description": "Which platform to push the exclusion to"},
-                    "advertiser_id":   {"type": "string"},
-                    "audience_list_id":{"type": "string"},
-                    "domains":         {
+                    "platform":        {
+                        "type": "string",
+                        "enum": ["dv360", "meta", "linkedin", "google_ads"],
+                        "description": "Which platform to push the exclusion to",
+                    },
+                    "advertiser_id":    {"type": "string", "description": "Platform advertiser / customer ID"},
+                    "audience_list_id": {
+                        "type": "string",
+                        "description": (
+                            "Audience list ID. "
+                            "DV360/Meta/LinkedIn: list/segment ID. "
+                            "Google Ads: user_list resource_name (customers/{id}/userLists/{id})."
+                        ),
+                    },
+                    "domains": {
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Company domains to exclude, e.g. ['acme.com', 'bigcorp.com']",
@@ -121,19 +135,27 @@ class OperatorAgent(BaseAgent):
         {
             "name": "reallocate_budget",
             "description": (
-                "Move budget from an underperforming line item to a high-performing one. "
-                "Supports DV360, SA360, and Google Ads. Capped at max_budget_shift_pct. "
+                "Move budget from an underperforming campaign to a high-performing one. "
+                "Supports DV360, SA360, Meta, LinkedIn, and Google Ads. "
+                "Capped at max_budget_shift_pct per run. "
+                "Google Ads: source_entity_id and target_entity_id are campaign IDs (numeric). "
                 "Requires approval unless OPERATOR_REQUIRE_APPROVAL=false."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "action_id":           {"type": "string", "description": "From log_proposed_action"},
-                    "platform":            {"type": "string", "enum": ["dv360", "sa360", "google_ads"]},
-                    "advertiser_id":       {"type": "string"},
-                    "source_entity_id":    {"type": "string", "description": "Line item / campaign to reduce"},
-                    "target_entity_id":    {"type": "string", "description": "Line item / campaign to increase"},
-                    "amount_usd":          {"type": "number"},
+                    "action_id":        {"type": "string", "description": "From log_proposed_action"},
+                    "platform":         {
+                        "type": "string",
+                        "enum": ["dv360", "sa360", "meta", "linkedin", "google_ads"],
+                    },
+                    "advertiser_id":    {
+                        "type": "string",
+                        "description": "Platform advertiser ID. Google Ads: customer ID (digits only).",
+                    },
+                    "source_entity_id": {"type": "string", "description": "Campaign / line item to reduce"},
+                    "target_entity_id": {"type": "string", "description": "Campaign / line item to increase"},
+                    "amount_usd":       {"type": "number"},
                 },
                 "required": ["action_id", "platform", "advertiser_id", "source_entity_id", "target_entity_id", "amount_usd"],
             },
@@ -299,6 +321,9 @@ class OperatorAgent(BaseAgent):
         from tools.gmp_client import ApprovalRequiredError, dv360_push_audience_exclusion
         from tools.meta_client import MetaAPIError, add_domains_to_exclusion_audience
         from tools.linkedin_client import LinkedInAPIError, add_companies_to_segment
+        from tools.google_ads_client import (
+            GoogleAdsAPIError, GoogleAdsSetupError, push_domain_suppression,
+        )
 
         try:
             if platform == "dv360":
@@ -314,6 +339,17 @@ class OperatorAgent(BaseAgent):
                 result = add_companies_to_segment(
                     segment_id=audience_list_id,
                     company_domains=domains,
+                )
+
+            elif platform == "google_ads":
+                # Google Ads Customer Match — audience_list_id is the user_list resource_name.
+                # Domain-to-email mapping via CRM is preferred for higher match rates.
+                # If no emails are pre-loaded, push_domain_suppression returns a manual fallback.
+                result = push_domain_suppression(
+                    customer_id=advertiser_id,
+                    user_list_resource_name=audience_list_id,
+                    domains=domains,
+                    crm_emails_by_domain=None,  # TODO: wire CRM lookup in Task 22/24
                 )
 
             else:
@@ -333,7 +369,8 @@ class OperatorAgent(BaseAgent):
             log.info("operator.suppression_executed", platform=platform, domains=len(domains))
             return {**result, "action_id": action_id, "domain_count": len(domains), "platform": platform}
 
-        except (ApprovalRequiredError, MetaAPIError, LinkedInAPIError) as exc:
+        except (ApprovalRequiredError, MetaAPIError, LinkedInAPIError,
+                GoogleAdsAPIError, GoogleAdsSetupError) as exc:
             return {
                 "action_id": action_id,
                 "executed":  False,
@@ -360,6 +397,10 @@ class OperatorAgent(BaseAgent):
             LinkedInAPIError,
             get_campaign as li_get_campaign,
             update_campaign_daily_budget as li_update_budget,
+        )
+        from tools.google_ads_client import (
+            GoogleAdsAPIError, GoogleAdsSetupError, GoogleAdsBudgetGuardrailError,
+            reallocate_campaign_budget as gads_reallocate,
         )
 
         try:
@@ -402,6 +443,16 @@ class OperatorAgent(BaseAgent):
                     "amount_moved_usd": amount_usd,
                 }
 
+            elif platform == "google_ads":
+                # advertiser_id = Google Ads customer ID (digits only, no dashes)
+                # source/target entity IDs = Google Ads campaign IDs (numeric strings)
+                result = gads_reallocate(
+                    customer_id=advertiser_id,
+                    source_campaign_id=source_entity_id,
+                    target_campaign_id=target_entity_id,
+                    amount_usd=amount_usd,
+                )
+
             else:
                 if settings.operator_require_approval:
                     raise ApprovalRequiredError(
@@ -419,7 +470,9 @@ class OperatorAgent(BaseAgent):
             log.info("operator.budget_reallocated", platform=platform, amount_usd=amount_usd)
             return {**result, "action_id": action_id}
 
-        except (ApprovalRequiredError, MetaAPIError, LinkedInAPIError, ValueError) as exc:
+        except (ApprovalRequiredError, MetaAPIError, LinkedInAPIError,
+                GoogleAdsAPIError, GoogleAdsSetupError, GoogleAdsBudgetGuardrailError,
+                ValueError) as exc:
             return {
                 "action_id": action_id,
                 "executed":  False,

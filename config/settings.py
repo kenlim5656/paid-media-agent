@@ -35,6 +35,18 @@ class Settings(BaseSettings):
     linkedin_access_token: str = ""
     linkedin_partner_id: str = ""       # LinkedIn DMP partner ID
 
+    # Google Ads API (Task 21)
+    # Full Mode (headless / Cloud Run): set all four vars — pull from GCP Secret Manager.
+    # Simple Mode (local practitioner): leave blank and run `python tools/setup_google_ads.py`.
+    google_ads_developer_token: str = ""       # issued by Google at your developer account
+    google_ads_client_id: str = ""             # OAuth 2.0 client ID (Google Cloud Console)
+    google_ads_client_secret: str = ""         # OAuth 2.0 client secret
+    google_ads_refresh_token: str = ""         # long-lived refresh token
+    google_ads_login_customer_id: str = ""     # MCC / manager account ID (digits only, no dashes)
+    google_ads_customer_id: str = ""           # default advertiser customer ID
+    google_ads_api_version: str = "v21"        # centralized version — override GOOGLE_ADS_API_VERSION env var
+    # v20 sunsets 2026-06-10. v21 is current stable. Do not hardcode elsewhere.
+
     # TikTok Ads (future)
     tiktok_access_token: str = ""
     tiktok_advertiser_id: str = ""
