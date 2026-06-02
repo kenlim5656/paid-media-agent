@@ -252,6 +252,7 @@ def load_meridian_data(
     geo_allowlist: list[str] | None = None,
     min_weekly_impressions: int = 1_000,
     include_sessions_control: bool = True,
+    apply_attribution_correction: bool = False,
 ) -> MeridianInputData:
     """
     Extract and transform BigQuery performance data into Meridian-ready tensors.
@@ -286,6 +287,15 @@ def load_meridian_data(
     include_sessions_control : bool
         If True, query ga4_sessions for a baseline traffic control variable.
         Set False if the sessions table is not yet populated.
+
+    apply_attribution_correction : bool
+        If True, load Task 37 attribution correction weights from
+        v_attribution_correction_weights and apply them to the KPI tensor
+        before returning. Correction multipliers in [0.60, 1.0) reduce KPI
+        values for channel/geo/week combinations flagged by the forensic
+        audit engine as contaminated by phantom conversions or CRM overwrites.
+        Default False (use uncorrected platform-reported conversions).
+        Run audit_data_attribution_cleanliness first to populate the view.
 
     Returns
     -------
@@ -555,18 +565,300 @@ def load_meridian_data(
     )
     result.validate()
 
+    # ── Task 37: Attribution Correction Weights ────────────────────────────
+    # Load forensic correction vectors from v_attribution_correction_weights and
+    # apply per-channel/geo/week KPI multipliers if attribution auditing is enabled.
+    if apply_attribution_correction:
+        log.info(
+            "meridian_loader.correction_weights.requested",
+            note="Loading Task 37 attribution correction weights from BigQuery.",
+        )
+        weights = load_attribution_correction_weights(
+            date_from=date_from,
+            date_to=date_to,
+        )
+        if weights:
+            result = apply_attribution_correction(
+                data=result,
+                correction_weights=weights,
+                warn_only=False,
+            )
+        else:
+            log.info(
+                "meridian_loader.correction_weights.empty",
+                note=(
+                    "No attribution correction weights found. "
+                    "Either the data is clean or audit_data_attribution_cleanliness "
+                    "has not been run yet. Proceeding with uncorrected KPI tensor."
+                ),
+            )
+    else:
+        # Even when not applying corrections, check for contamination and warn.
+        # This surfaces the issue without blocking the MMM run.
+        try:
+            weights = load_attribution_correction_weights(
+                date_from=date_from,
+                date_to=date_to,
+            )
+            if weights:
+                contaminated = sorted({ch for (ch, _, _) in weights if ch in channel_index})
+                if contaminated:
+                    log.warning(
+                        "meridian_loader.attribution_contamination_warning",
+                        contaminated_channels=contaminated,
+                        note=(
+                            "Attribution anomalies exist for these channels in "
+                            "v_attribution_correction_weights. "
+                            "Pass apply_attribution_correction=True to apply "
+                            "forensic correction vectors to the KPI tensor, "
+                            "or run audit_data_attribution_cleanliness for a full report."
+                        ),
+                    )
+        except Exception:
+            pass  # passive check — never block the MMM run
+
     log.info(
         "meridian_loader.complete",
-        kpi_total=float(kpi.sum()),
-        spend_total=float(media_spend.sum()),
-        impressions_total=float(media.sum()),
+        kpi_total=float(result.kpi.sum()),
+        spend_total=float(result.media_spend.sum()),
+        impressions_total=float(result.media.sum()),
         shape=f"[{G}×{T}×{C}]",
+        attribution_correction_applied=apply_attribution_correction,
     )
 
     return result
 
 
 # ── Convenience helpers ────────────────────────────────────────────────────────
+
+
+# ── Task 37 — Attribution Correction Weight Integration ───────────────────────
+
+_CORRECTION_WEIGHT_QUERY = """\
+-- Task 37 correction weights: channel / geo / ISO week multipliers.
+-- Reads from v_attribution_correction_weights (rolling 90-day deduped anomaly window).
+-- Returns only degraded/contaminated channel-geo-week combinations (multiplier < 1.0).
+SELECT
+    channel,
+    geo_country_code,
+    FORMAT_DATE('%G-W%V', week_start) AS iso_week,
+    correction_multiplier,
+    quality_tier,
+    anomaly_count,
+    phantom_conversion_count,
+    weighted_severity_sum,
+    estimated_at_risk_pipeline
+FROM `{project}.{dataset}.v_attribution_correction_weights`
+WHERE correction_multiplier < 1.0
+ORDER BY correction_multiplier ASC
+"""
+
+
+def load_attribution_correction_weights(
+    date_from: str,
+    date_to: str,
+) -> dict[tuple[str, str, str], float]:
+    """
+    Load Task 37 attribution correction multipliers from v_attribution_correction_weights.
+
+    Returns a lookup dict keyed by (channel, geo_country_code, iso_week) → multiplier
+    where multiplier is in [0.60, 1.0]. Missing keys imply multiplier = 1.0 (clean).
+
+    Called by load_meridian_data() when apply_attribution_correction=True.
+    Requires that audit_data_attribution_cleanliness has been run at least once
+    to populate data_attribution_anomalies. Returns an empty dict (no corrections)
+    if the forensics table has never been populated.
+
+    Parameters
+    ----------
+    date_from : str
+        Start of the MMM data window. Used for logging only — the view operates
+        on a rolling 90-day anomaly window regardless of this parameter.
+    date_to : str
+        End of the MMM data window. Used for logging only.
+
+    Returns
+    -------
+    dict[(channel, geo, iso_week), float]
+        Correction multipliers. Apply to KPI tensor cell (g_i, t_i) for the
+        matching channel / geo / week combination.
+    """
+    try:
+        from config import settings
+        from tools.bigquery_client import get_client
+    except ImportError:
+        log.warning("meridian_loader.correction_weights.import_failed")
+        return {}
+
+    project = settings.gcp_project_id
+    dataset = settings.gcp_dataset_id
+    sql = _CORRECTION_WEIGHT_QUERY.format(project=project, dataset=dataset)
+
+    try:
+        client = get_client()
+        job = client.query(sql)
+        rows = list(job.result())
+    except Exception as exc:
+        # Graceful degradation: if the forensics table hasn't been created yet,
+        # or v_attribution_correction_weights has never been populated, log a
+        # warning and proceed with uncorrected data.
+        log.warning(
+            "meridian_loader.correction_weights.unavailable",
+            error=str(exc),
+            note=(
+                "v_attribution_correction_weights is not yet populated. "
+                "Run audit_data_attribution_cleanliness at least once to generate "
+                "correction vectors. Proceeding with uncorrected KPI tensor."
+            ),
+        )
+        return {}
+
+    weights: dict[tuple[str, str, str], float] = {}
+    for row in rows:
+        channel    = str(row["channel"] or "")
+        geo        = str(row["geo_country_code"] or "XX")
+        iso_week   = str(row["iso_week"] or "")
+        multiplier = float(row["correction_multiplier"] or 1.0)
+        if channel and iso_week and 0.0 < multiplier < 1.0:
+            weights[(channel, geo, iso_week)] = multiplier
+
+    log.info(
+        "meridian_loader.correction_weights.loaded",
+        date_from=date_from,
+        date_to=date_to,
+        contaminated_combinations=len(weights),
+    )
+    return weights
+
+
+def apply_attribution_correction(
+    data: "MeridianInputData",
+    correction_weights: dict[tuple[str, str, str], float],
+    warn_only: bool = False,
+) -> "MeridianInputData":
+    """
+    Apply Task 37 attribution correction multipliers to the KPI tensor.
+
+    For each (channel, geo, week) combination with a correction_multiplier < 1.0,
+    reduces the corresponding KPI cell by the multiplier to compensate for
+    phantom conversions and timestamp-divergence attribution inflation.
+
+    The media and media_spend tensors are NOT modified — only KPI is adjusted.
+    This is intentional: the spend data is factual; the conversion signal is what
+    needs correcting.
+
+    Parameters
+    ----------
+    data : MeridianInputData
+        The fully assembled input package from load_meridian_data().
+
+    correction_weights : dict[(channel, geo, iso_week), float]
+        Output of load_attribution_correction_weights(). Empty dict = no-op.
+
+    warn_only : bool
+        If True, log engineering warnings but do NOT modify the KPI tensor.
+        Useful for auditing the magnitude of corrections without applying them.
+
+    Returns
+    -------
+    MeridianInputData
+        Modified input package with KPI tensor adjusted.
+        If warn_only=True or correction_weights is empty, returns data unchanged.
+    """
+    import numpy as np
+
+    if not correction_weights:
+        log.info("meridian_loader.correction.no_weights", note="KPI tensor unchanged.")
+        return data
+
+    # Identify which channels in the correction dict overlap with channel_index
+    contaminated_channels: list[str] = sorted(
+        {ch for (ch, _geo, _wk) in correction_weights if ch in data.channel_index}
+    )
+
+    if not contaminated_channels:
+        log.info(
+            "meridian_loader.correction.no_channel_overlap",
+            correction_channels=sorted({ch for (ch, _, _) in correction_weights}),
+            model_channels=data.channel_index,
+            note="No correction channels match MMM channel_index. KPI tensor unchanged.",
+        )
+        return data
+
+    # Engineering warning: always emit regardless of warn_only
+    log.warning(
+        "meridian_loader.attribution_contamination_detected",
+        contaminated_channels=contaminated_channels,
+        total_combinations=len(correction_weights),
+        correction_applied=not warn_only,
+        note=(
+            "Attribution anomalies detected in v_attribution_correction_weights for "
+            f"channel(s): {contaminated_channels}. "
+            "These channels have phantom conversions or timestamp-divergence overwrites "
+            "that inflate the platform-reported conversion signal used as the MMM KPI. "
+            + (
+                "Correction vectors applied to KPI tensor — multipliers in [0.60, 1.0)."
+                if not warn_only
+                else "warn_only=True — run with apply_attribution_correction=True to apply corrections."
+            )
+        ),
+    )
+
+    if warn_only:
+        return data
+
+    # Apply corrections: KPI[g_i, t_i] *= multiplier for each affected (geo, week)
+    # We apply the MOST conservative (lowest) multiplier across all channels for a
+    # given (geo, week) pair, since the KPI tensor is not channel-disaggregated.
+    kpi_adjusted = data.kpi.copy()
+    cells_corrected = 0
+
+    geo_to_i  = {g: i for i, g in enumerate(data.geo_index)}
+    week_to_i = {w: i for i, w in enumerate(data.time_index)}
+
+    # Group corrections by (geo, iso_week), take minimum multiplier across channels
+    gt_multipliers: dict[tuple[int, int], float] = {}
+    for (channel, geo, iso_week), mult in correction_weights.items():
+        if channel not in data.channel_index:
+            continue  # skip channels not in this MMM run
+        g_i = geo_to_i.get(geo)
+        t_i = week_to_i.get(iso_week)
+        if g_i is None or t_i is None:
+            continue
+        key = (g_i, t_i)
+        gt_multipliers[key] = min(gt_multipliers.get(key, 1.0), mult)
+
+    for (g_i, t_i), multiplier in gt_multipliers.items():
+        original = kpi_adjusted[g_i, t_i]
+        kpi_adjusted[g_i, t_i] = original * multiplier
+        if original > 0:
+            cells_corrected += 1
+
+    log.info(
+        "meridian_loader.correction.applied",
+        cells_corrected=cells_corrected,
+        kpi_original_sum=float(data.kpi.sum()),
+        kpi_corrected_sum=float(kpi_adjusted.sum()),
+        reduction_pct=round(
+            (1.0 - float(kpi_adjusted.sum()) / max(float(data.kpi.sum()), 1e-9)) * 100,
+            2,
+        ),
+    )
+
+    # Return new MeridianInputData with adjusted KPI tensor
+    return MeridianInputData(
+        kpi=kpi_adjusted,
+        media=data.media,
+        media_spend=data.media_spend,
+        controls=data.controls,
+        population=data.population,
+        geo_index=data.geo_index,
+        time_index=data.time_index,
+        channel_index=data.channel_index,
+        control_index=data.control_index,
+        date_from=data.date_from,
+        date_to=data.date_to,
+    )
 
 
 def lookup_geo(data: MeridianInputData, geo: str) -> int:

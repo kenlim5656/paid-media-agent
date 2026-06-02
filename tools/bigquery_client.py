@@ -130,6 +130,12 @@ _TABLES: dict[str, str] = {
     "market_signals_staging":        "market_signals_staging",
     "competitor_messaging_vectors":  "competitor_messaging_vectors",
 
+    # ── Attribution forensics layer — table + view (16_attribution_forensics.sql) ─
+    # Written by tools/attribution_verifier.py AttributionVerifier.run_audit().
+    "data_attribution_anomalies":        "data_attribution_anomalies",
+    # Aggregated correction multipliers — read by meridian_data_loader.
+    "v_attribution_correction_weights":  "v_attribution_correction_weights",
+
     # ── Source / staging tables (org-defined, outside schema DDL) ─────────────
     # These are the raw source tables that the agents read from.
     # Names are configurable via settings but default to sensible values.

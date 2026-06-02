@@ -746,6 +746,82 @@ class AnalystAgent(BaseAgent):
                 "required": ["source_urls", "competitor_name"],
             },
         },
+        {
+            "name": "audit_data_attribution_cleanliness",
+            "description": (
+                "Run the Attribution Forensic Verification Engine to detect CRM data overwrites, "
+                "tracking anomalies, and phantom conversions across the paid media stack (Task 37). "
+                "\n\n"
+                "Three forensic tests are executed sequentially:\n"
+                "  1. Orphaned Token Test — scans crm_leads_staging for leads whose analytics "
+                "session carried a paid click token (gclid, fbclid, msclkid, ttclid, li_fat_id) "
+                "but whose CRM LeadSource is assigned to an offline label such as 'Content "
+                "Syndication', 'SDR Cold Outreach', or 'Webinar Ingestion'. Flags each match "
+                "as an attribution overwrite with 0.85 confidence.\n"
+                "  2. Timestamp Divergence Test — where a lead modification timestamp is available "
+                "(systemmodstamp or lead_source_updated_at), compares the click token capture "
+                "time to the LeadSource assignment time. If the offline label was applied AFTER "
+                "the click token was captured, classifies the event as an explicit overwrite. "
+                "Confidence scales with the overwrite lag in hours. Skips gracefully if no "
+                "modification timestamp column exists in crm_leads_staging.\n"
+                "  3. Phantom Conversion Test — cross-references platform_daily_spend "
+                "(platform-reported conversions per channel/geo/day) against conversion_events "
+                "(CRM-matched conversions). Flags days where platform pixels claim significantly "
+                "more conversions than the CRM holds within a configurable attribution window "
+                "(default 7 days). Ordered by phantom gap magnitude.\n"
+                "\n"
+                "Dual payload:\n"
+                "  backend — anomaly rows streamed to data_attribution_anomalies in BigQuery; "
+                "summary dict with total anomaly count, at-risk pipeline value, and per-type "
+                "breakdown; correction multipliers available via v_attribution_correction_weights\n"
+                "  markdown_summary — audit brief with a 0–100 data cleanliness score, "
+                "anomaly matrix by type and platform, overwrite source breakdown, and "
+                "actionable CRM integration fix recommendations\n"
+                "\n"
+                "MMM calibration hook:\n"
+                "  After running this tool, the next run_mmm_model call can pass "
+                "apply_attribution_correction=True to the meridian_data_loader to automatically "
+                "apply the per-channel/geo/week correction multipliers from "
+                "v_attribution_correction_weights before MMM tensor packaging."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "lookback_days": {
+                        "type": "integer",
+                        "default": 90,
+                        "description": (
+                            "How far back to scan CRM and session data (default 90 days). "
+                            "Longer windows surface more historical overwrites but increase "
+                            "BigQuery query cost. 90 days is the recommended production default. "
+                            "Use 30 days for lightweight weekly health checks."
+                        ),
+                    },
+                    "attribution_window_days": {
+                        "type": "integer",
+                        "default": 7,
+                        "description": (
+                            "Grace window for the Phantom Conversion test (default 7 days). "
+                            "Platform conversions may precede CRM record creation by up to "
+                            "this many days due to data pipeline latency. Increase to 14 days "
+                            "for B2B stacks with slow CRM sync cadences."
+                        ),
+                    },
+                    "lead_source_offline_patterns": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Override the default offline LeadSource label set. Provide the full "
+                            "list of your org's offline and non-paid LeadSource values, e.g. "
+                            "['Content Syndication', 'SDR Cold Outreach', 'Webinar Ingestion', "
+                            "'Direct Mail', 'Trade Show']. "
+                            "If omitted, uses the built-in default set of ~20 common offline labels."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
     ]
 
     # ── Tool implementations ──────────────────────────────────────────────────
@@ -2170,6 +2246,61 @@ class AnalystAgent(BaseAgent):
             "competitor_context_for_copy": competitor_context_for_copy,
         }
 
+    def _tool_audit_data_attribution_cleanliness(
+        self,
+        lookback_days: int = 90,
+        attribution_window_days: int = 7,
+        lead_source_offline_patterns: list[str] | None = None,
+    ) -> dict:
+        """
+        Run all three forensic attribution integrity tests and return a dual payload.
+
+        Delegates to tools/attribution_verifier.AttributionVerifier.run_audit().
+        Anomaly rows are streamed to data_attribution_anomalies in BigQuery.
+        Correction multipliers become available via v_attribution_correction_weights.
+
+        Returns:
+          run_id, anomaly_count, cleanliness_score (0–100),
+          total_pipeline_at_risk, anomalies_by_type, anomalies_by_platform,
+          anomalies_by_lead_source, test_results,
+          markdown_summary (audit brief),
+          mmm_note (instructions for applying correction weights to next MMM run).
+        """
+        from tools.attribution_verifier import AttributionVerifier
+
+        verifier = AttributionVerifier()
+        result = verifier.run_audit(
+            lookback_days=int(lookback_days),
+            attribution_window_days=int(attribution_window_days),
+            lead_source_offline_patterns=lead_source_offline_patterns,
+        )
+
+        markdown_summary = _build_audit_markdown(result)
+
+        log.info(
+            "analyst.attribution_audit.complete",
+            run_id=result["run_id"],
+            anomaly_count=result["anomaly_count"],
+            cleanliness_score=result["cleanliness_score"],
+            pipeline_at_risk=result["total_pipeline_at_risk"],
+        )
+
+        mmm_note = (
+            "Attribution correction weights are now available in v_attribution_correction_weights. "
+            "On the next run_mmm_model call, the meridian_data_loader will read these weights "
+            "and apply per-channel/geo correction multipliers to the KPI tensor when "
+            "apply_attribution_correction=True is passed."
+            if result["anomaly_count"] > 0
+            else "No anomalies detected. Attribution data is clean — no MMM corrections needed."
+        )
+
+        return {
+            **result,
+            "markdown_summary": markdown_summary,
+            "mmm_note":         mmm_note,
+            "bq_views_updated": ["v_attribution_correction_weights"],
+        }
+
 
 # ── Market Signals Markdown builder (module-level, pure formatting) ────────────
 
@@ -2484,6 +2615,270 @@ def _build_momentum_markdown(
         "*Signal scores are Google Trends relative interest (0–100 within the keyword set).*",
         "*MoM velocity = (current window avg − prior window avg) / prior avg × 100.*",
         "*Reddit mention counts are normalised to 0–100 relative to the highest-volume keyword.*",
+    ]
+
+    return "\n".join(lines)
+
+
+# ── Attribution Audit Markdown builder (module-level, pure formatting) ────────
+
+
+def _build_audit_markdown(result: dict) -> str:
+    """
+    Build a structured Markdown audit brief for audit_data_attribution_cleanliness.
+
+    Sections:
+      1. Audit Run Summary (run_id, period, tests status)
+      2. Data Cleanliness Score (0–100 visual gauge with grade)
+      3. Anomaly Detection Matrix (by type and platform)
+      4. Attribution Drift — Source Breakdown (which CRM source labels are affected)
+      5. Recommendation Block (per-workflow corrective actions)
+    """
+    from datetime import date
+
+    today          = date.today().isoformat()
+    run_id         = result.get("run_id", "—")
+    anomaly_count  = result.get("anomaly_count", 0)
+    score          = float(result.get("cleanliness_score", 100.0))
+    pipeline_risk  = float(result.get("total_pipeline_at_risk", 0.0))
+    lookback_days  = result.get("lookback_days", 90)
+    test_results   = result.get("test_results", {})
+    by_type        = result.get("anomalies_by_type", {})
+    by_platform    = result.get("anomalies_by_platform", {})
+    by_source      = result.get("anomalies_by_lead_source", {})
+
+    # ── Score interpretation ────────────────────────────────────────────────
+    if score >= 90:
+        grade, tier, badge = "A", "Clean", "✅"
+    elif score >= 75:
+        grade, tier, badge = "B", "Degraded", "🟡"
+    elif score >= 60:
+        grade, tier, badge = "C", "Contaminated", "🟠"
+    else:
+        grade, tier, badge = "D", "Critical", "🔴"
+
+    filled  = int(score / 10)
+    empty   = 10 - filled
+    gauge   = "█" * filled + "░" * empty
+
+    # ── Test status badges ──────────────────────────────────────────────────
+    def _test_badge(test_key: str) -> str:
+        tr = test_results.get(test_key, {})
+        if not tr.get("ok", False):
+            return "⚠️ Skipped"
+        n = tr.get("anomalies_detected", 0)
+        return f"✅ Clean (0 found)" if n == 0 else f"🔴 {n} anomalies"
+
+    orphan_badge    = _test_badge("orphaned_token")
+    diverge_badge   = _test_badge("timestamp_divergence")
+    phantom_badge   = _test_badge("phantom_conversion")
+
+    lines: list[str] = [
+        f"## 🔬 Attribution Data Audit — {today}",
+        "",
+        f"| | |",
+        f"|-|-|",
+        f"| **Run ID** | `{run_id}` |",
+        f"| **Lookback window** | {lookback_days} days |",
+        f"| **Total anomalies detected** | {anomaly_count} |",
+        f"| **Estimated pipeline at risk** | ${pipeline_risk:,.0f} |",
+        "",
+        "---",
+        "",
+    ]
+
+    # ── Section 2: Cleanliness Score ───────────────────────────────────────
+    lines += [
+        "## 📊 Data Cleanliness Score",
+        "",
+        f"**{badge} {score:.0f}/100 — Grade {grade} ({tier})**",
+        "",
+        f"`{gauge}` {score:.0f}%",
+        "",
+    ]
+
+    if score >= 90:
+        lines.append(
+            "> ✅ Attribution data is clean. No significant tracking integrity issues detected. "
+            "No MMM correction adjustments are required for this period."
+        )
+    elif score >= 75:
+        lines.append(
+            "> 🟡 Minor attribution drift detected. Some CRM leads have been mislabelled "
+            "away from their paid source. Review the source breakdown below and correct "
+            "the highest-volume overwrite workflows."
+        )
+    elif score >= 60:
+        lines.append(
+            "> 🟠 Significant attribution contamination detected. Paid channel credit is "
+            "being systematically shifted to offline sources. MMM models built on this "
+            "data will under-estimate paid media ROI. Apply correction weights before "
+            "the next Meridian run."
+        )
+    else:
+        lines.append(
+            "> 🔴 Critical attribution integrity failure. Phantom conversion events and/or "
+            "pervasive CRM overwrites are corrupting the measurement stack. Escalate "
+            "immediately to the CRM admin and GTM/pixel implementation team."
+        )
+
+    lines += ["", "---", ""]
+
+    # ── Section 3: Anomaly Detection Matrix ────────────────────────────────
+    lines += [
+        "## 🧪 Forensic Test Results",
+        "",
+        "| Test | Status | Description |",
+        "|------|--------|-------------|",
+        f"| Orphaned Token Test | {orphan_badge} | Paid click token + offline CRM LeadSource |",
+        f"| Timestamp Divergence | {diverge_badge} | LeadSource reassigned after click captured |",
+        f"| Phantom Conversion Test | {phantom_badge} | Platform pixels > CRM conversions (gap > window) |",
+        "",
+        "---",
+        "",
+    ]
+
+    if anomaly_count > 0:
+        # ── Anomaly breakdown by type ─────────────────────────────────────
+        lines += [
+            "## 📋 Anomaly Breakdown",
+            "",
+            "**By Anomaly Type:**",
+            "",
+            "| Anomaly Type | Count | Severity | Impact |",
+            "|-------------|-------|----------|--------|",
+        ]
+        _type_meta = {
+            "orphaned_token":       ("Orphaned Token",       "Medium 🟡", "Wrong channel credited in CRM"),
+            "timestamp_divergence": ("Timestamp Divergence",  "High 🟠",   "Proven CRM overwrite event"),
+            "phantom_conversion":   ("Phantom Conversion",    "Critical 🔴", "Platform over-reporting conversions"),
+        }
+        for atype, count in sorted(by_type.items(), key=lambda x: -x[1]):
+            label, sev, impact = _type_meta.get(atype, (atype, "Unknown", "—"))
+            lines.append(f"| {label} | {count} | {sev} | {impact} |")
+
+        # ── Anomaly breakdown by platform ─────────────────────────────────
+        if by_platform:
+            lines += [
+                "",
+                "**By Flagged Platform:**",
+                "",
+                "| Platform | Anomaly Count |",
+                "|----------|--------------|",
+            ]
+            for platform, count in sorted(by_platform.items(), key=lambda x: -x[1]):
+                lines.append(f"| {platform} | {count} |")
+
+        lines += ["", "---", ""]
+
+        # ── Section 4: Attribution Drift — Source Breakdown ───────────────
+        lines += [
+            "## 🗂️ Attribution Drift — CRM Source Breakdown",
+            "",
+            "*These CRM LeadSource labels are receiving credit that forensic evidence "
+            "attributes to paid media channels. Each row represents a CRM workflow "
+            "or data integration that is introducing attribution drift.*",
+            "",
+            "| CRM LeadSource (Receiving Unearned Credit) | Anomaly Count |",
+            "|--------------------------------------------|--------------|",
+        ]
+        top_sources = sorted(by_source.items(), key=lambda x: -x[1])[:15]
+        for source, count in top_sources:
+            display = source.replace("_", " ").title() if source != "no_crm_source" else "— (Phantom, no CRM lead)"
+            lines.append(f"| {display} | {count} |")
+
+        lines += ["", "---", ""]
+
+    # ── Section 5: Recommendation Block ────────────────────────────────────
+    lines += [
+        "## 🔧 Corrective Action Recommendations",
+        "",
+    ]
+
+    orphan_n  = by_type.get("orphaned_token", 0)
+    diverge_n = by_type.get("timestamp_divergence", 0)
+    phantom_n = by_type.get("phantom_conversion", 0)
+
+    if orphan_n > 0:
+        lines += [
+            "### 1. Orphaned Token Overwrites — CRM LeadSource Integration",
+            "",
+            f"> **{orphan_n} leads** were sourced by a paid click but reassigned to an offline label.",
+            ">",
+            "> **Root cause:** Manual rep edits or CRM workflow rules are overwriting `LeadSource` "
+            "after the lead enters the system, discarding the original ad attribution.",
+            ">",
+            "> **Fix:** (a) Audit CRM workflow rules and triggers that modify `LeadSource` — "
+            "implement a 'first touch wins' protection rule to prevent overwrite after initial "
+            "paid attribution is set. (b) Add a secondary field `Paid_Lead_Source__c` that is "
+            "write-protected once a click token is detected. (c) Review your Salesforce / HubSpot "
+            "LeadSource picklist to ensure paid channels appear as valid options.",
+            "",
+        ]
+
+    if diverge_n > 0:
+        lines += [
+            "### 2. Timestamp Divergence — Explicit CRM Source Overwrites",
+            "",
+            f"> **{diverge_n} leads** had their LeadSource changed to an offline label "
+            "AFTER the paid click was captured.",
+            ">",
+            "> **Root cause:** SDR or marketing ops teams are manually re-sourcing leads after "
+            "outreach contact — overwriting the original paid attribution timestamp.",
+            ">",
+            "> **Fix:** (a) Implement CRM field-level security to lock `LeadSource` after initial "
+            "creation when a click token is present. (b) Introduce an `Original_Lead_Source__c` "
+            "field mirroring the creation-time `LeadSource` value — make it read-only. "
+            "(c) Run a de-duplication reconciliation to restore original attribution on "
+            "high-value overwritten leads in the current pipeline.",
+            "",
+        ]
+
+    if phantom_n > 0:
+        lines += [
+            "### 3. Phantom Conversions — Pixel / Tag Implementation",
+            "",
+            f"> **{phantom_n} day-platform combinations** show platform-reported conversions "
+            "significantly exceeding CRM-matched conversions.",
+            ">",
+            "> **Root cause:** Conversion pixel misconfiguration — common causes include "
+            "double-firing on form submissions, view-through conversion counting without "
+            "deduplication, or test environment pixel events reaching production.",
+            ">",
+            "> **Fix:** (a) Audit GTM triggers for the conversion events flagged above — "
+            "check for duplicate triggers on the same form submission. (b) Review each "
+            "platform's conversion deduplication settings (order ID / transaction ID). "
+            "(c) Add environment filters in GTM to exclude dev/staging domains from "
+            "production conversion tags. (d) Consider switching to server-side conversion "
+            "API (CAPI/ECA) for the affected platforms to get deduplication at the "
+            "ingestion layer.",
+            "",
+        ]
+
+    if anomaly_count == 0:
+        lines += [
+            "> ✅ No corrective actions required. Attribution data integrity is clean "
+            f"for the {lookback_days}-day lookback window.",
+            "",
+        ]
+
+    lines += [
+        "---",
+        "",
+        "**MMM Calibration:**",
+        (
+            f"Correction weights for {len(by_platform)} platform(s) are now available in "
+            "`v_attribution_correction_weights`. Pass `apply_attribution_correction=True` "
+            "to the next `run_mmm_model` call to apply per-channel/geo/week multipliers "
+            "before tensor packaging."
+            if anomaly_count > 0
+            else "No correction adjustments needed — all channels are clean."
+        ),
+        "",
+        "---",
+        "",
+        f"*Attribution Forensic Verification Engine — Task 37 | Run ID: `{run_id}`*",
+        f"*Anomalies written to `data_attribution_anomalies` · Correction view: `v_attribution_correction_weights`*",
     ]
 
     return "\n".join(lines)
