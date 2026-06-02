@@ -101,6 +101,20 @@ class Settings(BaseSettings):
     reddit_client_secret: str = ""
     reddit_user_agent: str = "paid-media-agent/1.0 (social-listening)"
 
+    # Reddit Ads Marketing API — Task 33
+    # Full Mode (headless / Cloud Run): set all three vars.
+    # Simple Mode (local): leave blank and run python tools/setup_reddit_ads.py → ~/reddit-ads.yaml
+    # Account IDs use the Reddit entity prefix: t2_ (user account) or a2_ (ad account).
+    # Multiple accounts: set REDDIT_ADS_ACCOUNT_IDS as comma-separated env var.
+    # Scopes required: ads:read, ads:write
+    # NOTE: distinct from REDDIT_CLIENT_ID/SECRET (Task 25 PRAW social listening).
+    reddit_ads_client_id: str = ""
+    reddit_ads_client_secret: str = ""
+    reddit_ads_refresh_token: str = ""        # OAuth refresh token for persistent ad account access
+    reddit_ads_account_id: str = ""           # default single account ID (t2_xxx or a2_xxx)
+    reddit_ads_username: str = "paid-media-agent"  # used in User-Agent header
+    reddit_ads_api_version: str = "v3"        # centralized version — override REDDIT_ADS_API_VERSION
+
     # Google Trends data provider — Social Listening (Task 25)
     # Set these three vars to use an authenticated marketing data provider
     # (DataForSEO Google Trends API or compatible service).

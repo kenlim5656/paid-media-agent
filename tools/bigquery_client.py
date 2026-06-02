@@ -106,6 +106,12 @@ _TABLES: dict[str, str] = {
     "causal_impact_runs":    "causal_impact_runs",
     "causal_impact_metrics": "causal_impact_metrics",
 
+    # ── Reddit Ads layer — tables (13_reddit_ads.sql) ────────────────────────
+    # Written by tools/reddit_ads_client.py run_daily_extraction().
+    "reddit_ads_runs":           "reddit_ads_runs",
+    "reddit_daily_spend":        "reddit_daily_spend",
+    "reddit_spatial_performance": "reddit_spatial_performance",
+
     # ── Social listening layer — tables (12_social_listening.sql) ─────────────
     # Written by tools/social_listening_client.py run_social_listening().
     "social_listening_runs":    "social_listening_runs",

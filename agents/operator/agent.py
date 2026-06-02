@@ -121,7 +121,7 @@ class OperatorAgent(BaseAgent):
                     "action_id":       {"type": "string", "description": "From log_proposed_action"},
                     "platform":        {
                         "type": "string",
-                        "enum": ["dv360", "meta", "linkedin", "google_ads", "tiktok"],
+                        "enum": ["dv360", "meta", "linkedin", "google_ads", "tiktok", "reddit_ads"],
                         "description": "Which platform to push the exclusion to",
                     },
                     "advertiser_id":    {"type": "string", "description": "Platform advertiser / customer ID"},
@@ -159,7 +159,7 @@ class OperatorAgent(BaseAgent):
                     "action_id":        {"type": "string", "description": "From log_proposed_action"},
                     "platform":         {
                         "type": "string",
-                        "enum": ["dv360", "sa360", "meta", "linkedin", "google_ads", "tiktok"],
+                        "enum": ["dv360", "sa360", "meta", "linkedin", "google_ads", "tiktok", "reddit_ads"],
                     },
                     "advertiser_id":    {
                         "type": "string",
@@ -461,7 +461,22 @@ class OperatorAgent(BaseAgent):
                     advertiser_id=advertiser_id,
                     audience_id=audience_list_id,
                     domains=domains,
-                    crm_emails_by_domain=None,  # TODO: wire CRM lookup in Task 22/24
+                    crm_emails_by_domain=None,  # CRM auto-fetch wired in Task 22
+                )
+
+            elif platform == "reddit_ads":
+                from tools.reddit_ads_client import (
+                    RedditAdsError, RedditAdsSetupError,
+                    push_domain_suppression as reddit_push_suppression,
+                )
+                # Reddit Ads Custom Audience — audience_list_id is the Reddit audience ID.
+                # CRM email hash upload is the only supported suppression method
+                # (Reddit does not support direct domain targeting).
+                result = reddit_push_suppression(
+                    account_id=advertiser_id,
+                    audience_id=audience_list_id,
+                    domains=domains,
+                    crm_emails_by_domain=None,  # CRM auto-fetch wired in Task 22
                 )
 
             else:
@@ -575,6 +590,20 @@ class OperatorAgent(BaseAgent):
                 # source/target entity IDs = TikTok campaign IDs (numeric strings)
                 result = tiktok_reallocate(
                     advertiser_id=advertiser_id,
+                    source_campaign_id=source_entity_id,
+                    target_campaign_id=target_entity_id,
+                    amount_usd=amount_usd,
+                )
+
+            elif platform == "reddit_ads":
+                from tools.reddit_ads_client import (
+                    RedditAdsError, RedditAdsSetupError, RedditAdsBudgetGuardrailError,
+                    reallocate_campaign_budget as reddit_reallocate,
+                )
+                # advertiser_id = Reddit ad account ID (t2_xxx / a2_xxx — validated in client)
+                # source/target entity IDs = Reddit campaign IDs
+                result = reddit_reallocate(
+                    account_id=advertiser_id,
                     source_campaign_id=source_entity_id,
                     target_campaign_id=target_entity_id,
                     amount_usd=amount_usd,
