@@ -1,0 +1,21 @@
+# Deploy with:
+# gcloud scheduler jobs create http <job-name> --schedule="..." \
+#   --uri="https://<cloud-run-url>/run?agent=<name>" \
+#   --http-method=POST \
+#   --oidc-service-account-email=<sa>@<project>.iam.gserviceaccount.com
+
+jobs:
+  - name: attribution-watchdog-hourly
+    schedule: "0 * * * *"          # every hour
+    agent: watchdog
+    description: "GTM capture rate and Salesforce null-field audit"
+
+  - name: attribution-analyst-daily
+    schedule: "0 6 * * *"          # 6am UTC daily (after GA4 export lands)
+    agent: analyst
+    description: "Account stitching + Full-Path MTA model update"
+
+  - name: attribution-operator-daily
+    schedule: "0 8 * * *"          # 8am UTC daily (after analyst completes)
+    agent: operator
+    description: "Budget reallocation proposals + audience suppression"
