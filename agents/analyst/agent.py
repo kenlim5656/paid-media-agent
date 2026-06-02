@@ -14,6 +14,7 @@ import math
 import uuid
 import structlog
 from datetime import datetime, timezone
+from typing import Any
 
 from agents.base import BaseAgent
 from tools import bigquery_client as bq
@@ -667,6 +668,82 @@ class AnalystAgent(BaseAgent):
                     },
                 },
                 "required": ["keywords"],
+            },
+        },
+        {
+            "name": "ingest_and_analyze_market_signals",
+            "description": (
+                "Ingest competitor web content and extract a structured AI-inferred "
+                "strategic messaging profile via the Market Signals Engine (Task 36). "
+                "\n\n"
+                "Pipeline:\n"
+                "  1. Fetch raw text from each source URL (landing pages, press releases, "
+                "blog posts) via httpx. Also accepts 'text://<payload>' scheme for direct "
+                "text input without HTTP fetch.\n"
+                "  2. Normalize text through the Task 25 pipeline: strip HTML, tracking "
+                "pixels, data URIs, emojis, and collapse whitespace.\n"
+                "  3. Write normalized text blocks to market_signals_staging in BigQuery.\n"
+                "  4. Pass combined text through a Claude inference call with the resolved "
+                "evaluation prompt (private_market_intelligence.md if present, else "
+                "public fallback) to extract: core value prop, positioning angle, "
+                "target audience, primary keywords, messaging pillars, CTA patterns, "
+                "and counter-positioning hooks.\n"
+                "  5. Write the inferred profile to competitor_messaging_vectors in BigQuery.\n"
+                "  6. Log the run to market_signals_runs.\n"
+                "\n"
+                "Returns a dual payload:\n"
+                "  backend_result  — run_id, vector, signal_count, prompt_source\n"
+                "  markdown_summary — comparison matrix with competitor hooks, keyword "
+                "frequencies, and a Counter-Positioning Action Guide\n"
+                "  competitor_context_for_copy — pre-formatted context string for "
+                "injection into Task 26 generate_creative_campaign_brief() calls\n"
+                "\n"
+                "Stealth Execution Gateway:\n"
+                "  If agents/analyst/skills/private_market_intelligence.md exists locally, "
+                "its contents are used as the master evaluation prompt (proprietary "
+                "heuristics, custom scoring, market-specific terminology). If absent, "
+                "falls back to a generic semantic extraction prompt. The private file is "
+                "gitignored and never committed or persisted to BigQuery."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "source_urls": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "List of publicly accessible HTTP/HTTPS URLs to analyze. "
+                            "Accepts landing pages, press releases, blog posts, and pricing pages. "
+                            "Also supports 'text://<content>' for direct text injection "
+                            "without an HTTP fetch. "
+                            "Maximum 25 URLs per run. "
+                            "Example: ['https://competitor.com', 'https://competitor.com/pricing']"
+                        ),
+                        "minItems": 1,
+                        "maxItems": 25,
+                    },
+                    "competitor_name": {
+                        "type": "string",
+                        "description": (
+                            "Canonical label for the competitor. Used as the primary key "
+                            "in BigQuery for filtering vectors. "
+                            "Optionally include domain in parens for auto-resolution: "
+                            "'Acme Corp (acme.com)'. "
+                            "Example: 'Salesforce', 'HubSpot (hubspot.com)'"
+                        ),
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": (
+                            "Optional market category for scoping the inference prompt. "
+                            "Helps the LLM apply domain-specific heuristics. "
+                            "Examples: 'B2B SaaS', 'marketing automation', 'revenue intelligence', "
+                            "'ecommerce', 'cybersecurity'. "
+                            "Also used when retrieving previously analyzed competitors."
+                        ),
+                    },
+                },
+                "required": ["source_urls", "competitor_name"],
             },
         },
     ]
@@ -2022,6 +2099,255 @@ class AnalystAgent(BaseAgent):
             "markdown_summary": markdown_summary,
             "errors":          result.get("errors", []),
         }
+
+    def _tool_ingest_and_analyze_market_signals(
+        self,
+        source_urls: list[str],
+        competitor_name: str,
+        category: str | None = None,
+    ) -> dict:
+        """
+        Execute a full market signals extraction and inference run.
+
+        Delegates to tools/market_signals_client.MarketSignalsClient.run_extraction():
+          1. Fetch + normalize each source URL
+          2. Write to market_signals_staging
+          3. Claude inference via resolved prompt (private or public fallback)
+          4. Write to competitor_messaging_vectors
+          5. Log run to market_signals_runs
+
+        Returns a dual payload:
+          markdown_summary           — competitor comparison matrix with counter-positioning guide
+          competitor_context_for_copy — pre-formatted string for Task 26 copy prompt injection
+          (plus all backend result fields: run_id, signal_count, vector, prompt_source, errors)
+        """
+        from tools.market_signals_client import (
+            MarketSignalsClient,
+            get_competitor_context,
+            format_competitor_context_for_copy,
+        )
+
+        client = MarketSignalsClient()
+        result = client.run_extraction(
+            source_urls=source_urls,
+            competitor_name=competitor_name,
+            category=category,
+        )
+
+        # ── Build Markdown summary ─────────────────────────────────────────
+        vector = result.get("vector") or {}
+        markdown_summary = _build_market_signals_markdown(
+            competitor_name=competitor_name,
+            category=category,
+            result=result,
+            vector=vector,
+        )
+
+        # ── Task 26 optimization hook ──────────────────────────────────────
+        # Fetch context from BQ (includes this run + any prior runs for this competitor)
+        # and format as a copy-prompt-ready string for generate_creative_campaign_brief().
+        recent_vectors = get_competitor_context(
+            competitor_name=competitor_name,
+            category=category,
+            limit=3,
+        )
+        competitor_context_for_copy = format_competitor_context_for_copy(recent_vectors)
+
+        log.info(
+            "analyst.market_signals.complete",
+            run_id=result.get("run_id"),
+            competitor=competitor_name,
+            signal_count=result.get("signal_count", 0),
+            prompt_source=result.get("prompt_source"),
+            ok=result.get("ok"),
+        )
+
+        return {
+            **result,
+            "competitor_name":           competitor_name,
+            "category":                  category,
+            "markdown_summary":          markdown_summary,
+            "competitor_context_for_copy": competitor_context_for_copy,
+        }
+
+
+# ── Market Signals Markdown builder (module-level, pure formatting) ────────────
+
+def _build_market_signals_markdown(
+    competitor_name: str,
+    category: str | None,
+    result: dict,
+    vector: dict,
+) -> str:
+    """
+    Build a structured Markdown comparison matrix for competitor analysis.
+
+    Sections:
+      1. Run summary (source count, prompt source, status)
+      2. Competitor Messaging Profile (core fields)
+      3. Keyword Frequency Analysis (top 15 detected terms)
+      4. Messaging Pillars breakdown
+      5. Counter-Positioning Action Guide (3 concrete hooks)
+    """
+    from datetime import date
+    import json as _json
+
+    today        = date.today().isoformat()
+    run_id       = result.get("run_id", "—")
+    ok           = result.get("ok", False)
+    signal_count = result.get("signal_count", 0)
+    prompt_src   = result.get("prompt_source", "public_fallback")
+    errors       = result.get("errors", [])
+    cat_label    = f" — {category}" if category else ""
+    status_badge = "✅ Complete" if ok else "⚠️ Partial" if signal_count > 0 else "❌ Failed"
+    prompt_badge = "🔒 Private heuristics" if prompt_src == "private" else "📋 Generic fallback"
+
+    # ── Parse JSON fields safely ───────────────────────────────────────────
+    def _parse_json(raw: Any, default: Any) -> Any:
+        if raw is None:
+            return default
+        if isinstance(raw, (list, dict)):
+            return raw
+        try:
+            return _json.loads(raw)
+        except Exception:
+            return default
+
+    keywords  = _parse_json(vector.get("primary_keywords_detected"), [])
+    pillars   = _parse_json(vector.get("messaging_pillars_json"), [])
+    ctas      = _parse_json(vector.get("cta_patterns_json"), [])
+    hooks     = _parse_json(vector.get("counter_positioning_hooks_json"), [])
+    themes    = _parse_json(vector.get("key_themes_json"), [])
+
+    lines: list[str] = [
+        f"## 🕵️ Market Signals Report: {competitor_name}{cat_label}",
+        "",
+        f"| | |",
+        f"|-|-|",
+        f"| **Status** | {status_badge} |",
+        f"| **Run ID** | `{run_id}` |",
+        f"| **Analysis date** | {today} |",
+        f"| **Sources ingested** | {signal_count} URL(s) |",
+        f"| **Evaluation mode** | {prompt_badge} |",
+    ]
+    if errors:
+        lines.append(f"| **Fetch errors** | {len(errors)} URL(s) failed — see errors list |")
+    lines += ["", "---", ""]
+
+    if not vector:
+        lines += [
+            "> ❌ No competitor messaging vector was produced.",
+            "> Check that the source URLs returned valid content and that the "
+            "Claude API key is configured.",
+        ]
+        return "\n".join(lines)
+
+    # ── Section 1: Competitor Messaging Profile ────────────────────────────
+    core_prop  = vector.get("core_value_prop") or "—"
+    angle      = vector.get("observed_positioning_angle") or "—"
+    audience   = vector.get("inferred_target_audience") or "—"
+    tone       = vector.get("sentiment_tone") or "—"
+
+    lines += [
+        "## 📋 Competitor Messaging Profile",
+        "",
+        "| Dimension | Detected Value |",
+        "|-----------|---------------|",
+        f"| **Core Value Proposition** | {core_prop} |",
+        f"| **Positioning Angle** | `{angle}` |",
+        f"| **Inferred Target Audience** | {audience} |",
+        f"| **Messaging Tone** | {tone} |",
+    ]
+
+    if ctas:
+        cta_str = " · ".join(f'"{c}"' for c in ctas[:5])
+        lines.append(f"| **CTA Patterns** | {cta_str} |")
+
+    lines += ["", "---", ""]
+
+    # ── Section 2: Keyword Frequency Analysis ─────────────────────────────
+    lines += [
+        "## 🔑 Primary Keywords Detected",
+        "",
+        "| Rank | Keyword | Signal Strength |",
+        "|------|---------|----------------|",
+    ]
+    for i, kw in enumerate(keywords[:15], 1):
+        kw_str = kw if isinstance(kw, str) else kw.get("keyword", str(kw))
+        bar    = "█" * max(1, 15 - i) + "░" * (i - 1)
+        lines.append(f"| {i} | `{kw_str}` | {bar} |")
+    lines += ["", "---", ""]
+
+    # ── Section 3: Messaging Pillars ──────────────────────────────────────
+    if pillars:
+        lines += ["## 🏛️ Messaging Pillars", ""]
+        for p in pillars[:3]:
+            pillar_name   = p.get("pillar", "—") if isinstance(p, dict) else str(p)
+            supporting    = p.get("supporting_claims", []) if isinstance(p, dict) else []
+            lines.append(f"### {pillar_name}")
+            for claim in supporting[:3]:
+                lines.append(f"- {claim}")
+            lines.append("")
+        lines += ["---", ""]
+
+    # ── Section 4: Key Narrative Themes ───────────────────────────────────
+    if themes:
+        lines += [
+            "## 🧵 Recurring Narrative Themes",
+            "",
+            "| Theme | Frequency | Example Phrase |",
+            "|-------|-----------|---------------|",
+        ]
+        for t in themes[:5]:
+            if isinstance(t, dict):
+                theme_name = t.get("theme", "—")
+                freq       = t.get("frequency", "—")
+                example    = t.get("example_phrase", "—")[:80]
+            else:
+                theme_name, freq, example = str(t), "—", "—"
+            lines.append(f"| {theme_name} | {freq} | *{example}* |")
+        lines += ["", "---", ""]
+
+    # ── Section 5: Counter-Positioning Action Guide ────────────────────────
+    lines += [
+        "## ⚔️ Counter-Positioning Action Guide",
+        "",
+        "*Concrete angles to differentiate your ad campaigns against this competitor's "
+        "observed messaging.*",
+        "",
+    ]
+    if hooks:
+        for i, h in enumerate(hooks[:3], 1):
+            if isinstance(h, dict):
+                angle_h     = h.get("angle", "—")
+                hook_text   = h.get("hook", "—")
+                rationale   = h.get("rationale", "—")
+            else:
+                angle_h, hook_text, rationale = str(h), "—", "—"
+            lines += [
+                f"### {i}. {angle_h}",
+                f"> **Ad Hook:** *\"{hook_text}\"*",
+                f"> **Rationale:** {rationale}",
+                "",
+            ]
+    else:
+        lines += [
+            "> No counter-positioning hooks were generated. "
+            "This may indicate content was too thin or generic for strategic extraction.",
+            "",
+        ]
+
+    lines += [
+        "---",
+        "",
+        f"*Analysis produced by the Paid Media Analyst Agent — Market Signals Engine (Task 36).*",
+        f"*Evaluation mode: {prompt_badge}. "
+        f"Raw signals in `market_signals_staging` · Vector in `competitor_messaging_vectors`.*",
+        f"*To use this as context in ad copy generation, pass the "
+        "`competitor_context_for_copy` field to `generate_creative_campaign_brief`.*",
+    ]
+
+    return "\n".join(lines)
 
 
 # ── Momentum Markdown builder (module-level, pure formatting) ─────────────────

@@ -124,6 +124,12 @@ _TABLES: dict[str, str] = {
     # Read by audience_mutation_engine._extract_seed_cohort().
     "v_lookalike_mutation_seed": "v_lookalike_mutation_seed",
 
+    # ── Market signals layer — tables (15_market_signals.sql) ─────────────────
+    # Written by tools/market_signals_client.py MarketSignalsClient.
+    "market_signals_runs":           "market_signals_runs",
+    "market_signals_staging":        "market_signals_staging",
+    "competitor_messaging_vectors":  "competitor_messaging_vectors",
+
     # ── Source / staging tables (org-defined, outside schema DDL) ─────────────
     # These are the raw source tables that the agents read from.
     # Names are configurable via settings but default to sensible values.
