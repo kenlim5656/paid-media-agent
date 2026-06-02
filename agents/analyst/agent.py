@@ -19,12 +19,13 @@ You are platform-agnostic. The identity graph holds signals from all ad platform
 (Google, Meta, LinkedIn, TikTok, etc.) and analytics tools (GA4, Adobe, Segment).
 
 Your daily run sequence — follow it in order:
-1. Call `start_attribution_run` — registers the run in BigQuery, returns a run_id.
-2. Call `stitch_identities` — merges new signals into the identity graph.
-3. Call `run_mta_model` with the run_id — computes Full-Path attribution and writes results.
-4. Call `build_channel_summary` with the run_id — aggregates to channel level for the MCP.
-5. Call `write_analyst_insight` — surface the most important finding as a structured insight.
-6. Call `complete_attribution_run` with the run_id — marks run as completed.
+1. Call `enrich_sessions` — resolve anonymous sessions to company domains (account-based analytics).
+2. Call `start_attribution_run` — registers the run in BigQuery, returns a run_id.
+3. Call `stitch_identities` — merges new signals into the identity graph.
+4. Call `run_mta_model` with the run_id — computes Full-Path attribution and writes results.
+5. Call `build_channel_summary` with the run_id — aggregates to channel level for the MCP.
+6. Call `write_analyst_insight` — surface the most important finding as a structured insight.
+7. Call `complete_attribution_run` with the run_id — marks run as completed.
 
 Default model: Full-Path (first touch 30%, last touch 30%, middle touches split 40%).
 Data-driven models: use run_shapley_model or run_markov_model instead of run_mta_model
@@ -37,6 +38,32 @@ class AnalystAgent(BaseAgent):
     name = "analyst"
     system_prompt = SYSTEM
     tools = [
+        {
+            "name": "enrich_sessions",
+            "description": (
+                "Resolve anonymous web sessions to company domains using IP intelligence. "
+                "Reads recent sessions from sgtm_request_logs that haven't been enriched yet, "
+                "calls the IP intelligence provider (Clearbit / ipinfo.io) for each, and writes "
+                "results to: ip_resolution_cache (/24 prefix only — never raw IPs), "
+                "company_profiles (upsert), company_sessions (de-anonymized session), and "
+                "company_engagement (rolling-30d aggregation). "
+                "Run first in the daily sequence before identity stitching and attribution."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "lookback_hours": {
+                        "type": "integer",
+                        "description": "How many hours back to look for unenriched sessions. Default: 48.",
+                    },
+                    "batch_size": {
+                        "type": "integer",
+                        "description": "Max sessions to process in this run. Default: 1000.",
+                    },
+                },
+                "required": [],
+            },
+        },
         {
             "name": "run_bigquery_query",
             "description": "Execute a SELECT query. Returns up to 200 rows.",
@@ -230,6 +257,24 @@ class AnalystAgent(BaseAgent):
     ]
 
     # ── Tool implementations ──────────────────────────────────────────────────
+
+    def _tool_enrich_sessions(
+        self,
+        lookback_hours: int | None = None,
+        batch_size: int | None = None,
+    ) -> dict:
+        """
+        Resolve anonymous sessions to company domains and write account analytics records.
+        Delegates to EnrichmentJob which handles IP intelligence + all DB writes.
+        Raw IP addresses are processed entirely within EnrichmentJob.run() and never
+        stored, logged, or returned from this method.
+        """
+        from agents.analyst.enrichment import EnrichmentJob
+        job = EnrichmentJob()
+        return job.run(
+            lookback_hours=lookback_hours,
+            batch_size=batch_size,
+        )
 
     def _tool_run_bigquery_query(self, sql: str, params: dict | None = None) -> dict:
         rows = bq.run_query(sql, params)

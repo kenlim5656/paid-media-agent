@@ -56,6 +56,21 @@ class Settings(BaseSettings):
     shapley_max_channels: int = 10          # cap channel count for Shapley computation
     shapley_max_paths: int = 10_000         # sample paths if dataset exceeds this
 
+    # IP intelligence — account-based analytics enrichment (Task 30)
+    ip_intelligence_provider: str = "ipinfo"
+    # "ipinfo"     ipinfo.io Company API (free tier: 50k lookups/month)
+    # "clearbit"   Clearbit Reveal (premium B2B firmographics)
+    # "composite"  Clearbit → ipinfo.io fallback chain
+
+    ipinfo_access_token: str = ""           # ipinfo.io access token
+    clearbit_api_key: str = ""              # Clearbit secret key
+    rb2b_api_key: str = ""                  # RB2B webhook secret (push-mode verification)
+
+    ip_resolution_cache_ttl_hours: int = 72         # cache TTL before re-resolving
+    ip_resolution_confidence_threshold: float = 0.70  # minimum confidence to accept
+    ip_enrichment_batch_size: int = 1_000            # sessions per enrichment run
+    ip_enrichment_lookback_hours: int = 48           # look back this many hours for unenriched sessions
+
     # Legacy aliases (kept for backwards compat with existing code)
     @property
     def gclid_capture_floor_pct(self) -> float:
