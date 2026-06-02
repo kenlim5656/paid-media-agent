@@ -257,6 +257,96 @@ class OperatorAgent(BaseAgent):
                 "required": ["channels", "value_proposition", "target_persona"],
             },
         },
+        {
+            "name": "sync_evolving_lookalike_seeds",
+            "description": (
+                "Detect ICP drift in closed-won CRM revenue and retrain lookalike seed "
+                "audiences across Meta, Google Ads, TikTok, and Reddit Ads in a single run. "
+                "\n\n"
+                "How it works:\n"
+                "  1. Reads v_lookalike_mutation_seed — a rolling 60-day cohort of closed-won "
+                "accounts in the top-25% ARR tier, enriched with firmographic over-index scores "
+                "(which industries / company sizes / regions are disproportionately driving "
+                "revenue vs top-of-funnel lead mix).\n"
+                "  2. SHA-256 hashes all seed emails (raw emails are never stored).\n"
+                "  3. Pushes the hashed seed to each configured platform audience synchronously.\n"
+                "  4. Logs each push to audience_mutation_logs in BigQuery.\n"
+                "  5. Returns a dual payload: internal result dict + Markdown analysis table "
+                "showing firmographic shifts and per-platform upload confirmation.\n"
+                "\n"
+                "Platform audience IDs:\n"
+                "  meta:       Custom Audience ID (numeric string)\n"
+                "  google_ads: UserList resource_name (customers/{id}/userLists/{id})\n"
+                "  tiktok:     DMP Custom Audience ID (numeric string)\n"
+                "  reddit_ads: Audience ID from POST /api/v3/audiences\n"
+                "\n"
+                "Requires OPERATOR_REQUIRE_APPROVAL approval gate before upload (each platform "
+                "client enforces this independently via _require_approval())."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "platform_configs": {
+                        "type": "array",
+                        "description": (
+                            "List of platform audience targets to hydrate in this run. "
+                            "Each entry must specify: platform, advertiser_id, audience_id. "
+                            "You may target all four platforms or a subset."
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "platform": {
+                                    "type": "string",
+                                    "enum": ["meta", "google_ads", "tiktok", "reddit_ads"],
+                                    "description": "Ad platform to push the seed to.",
+                                },
+                                "advertiser_id": {
+                                    "type": "string",
+                                    "description": (
+                                        "Platform-specific advertiser/account ID. "
+                                        "Meta: leave blank (uses settings.meta_ad_account_id). "
+                                        "Google Ads: customer_id (digits only, no dashes). "
+                                        "TikTok: advertiser_id (numeric string). "
+                                        "Reddit Ads: ad account ID (t2_xxx or a2_xxx)."
+                                    ),
+                                },
+                                "audience_id": {
+                                    "type": "string",
+                                    "description": (
+                                        "Platform audience / list ID to hydrate with seed emails. "
+                                        "Meta/TikTok/Reddit: numeric audience ID. "
+                                        "Google Ads: user_list resource_name "
+                                        "(e.g. 'customers/123/userLists/456')."
+                                    ),
+                                },
+                            },
+                            "required": ["platform", "audience_id"],
+                        },
+                        "minItems": 1,
+                    },
+                    "seed_limit": {
+                        "type": "integer",
+                        "default": 10000,
+                        "description": (
+                            "Maximum unique emails to push per platform audience. "
+                            "Default: 10,000 (safe for initial runs). "
+                            "Increase for mature pipelines with larger seed pools. "
+                            "Set to 0 or omit to use the full cohort (no cap)."
+                        ),
+                    },
+                    "run_label": {
+                        "type": "string",
+                        "description": (
+                            "Optional human-readable label for this mutation run, "
+                            "e.g. 'Q2 ICP refresh — post-series-B cohort'. "
+                            "Stored in the Markdown summary header."
+                        ),
+                    },
+                },
+                "required": ["platform_configs"],
+            },
+        },
     ]
 
     # ── Tool implementations ──────────────────────────────────────────────────
@@ -923,8 +1013,60 @@ class OperatorAgent(BaseAgent):
             "frameworks_generated": frameworks_requested,
         }
 
+    # ── Lookalike Audience Mutation Tool ──────────────────────────────────────
 
-# ── Markdown builder (module-level, pure formatting) ─────────────────────────
+    def _tool_sync_evolving_lookalike_seeds(
+        self,
+        platform_configs: list[dict],
+        seed_limit: int = 10_000,
+        run_label: str | None = None,
+    ) -> dict:
+        """
+        Execute a full lookalike seed mutation cycle:
+          • Read v_lookalike_mutation_seed (rolling 60-day closed-won cohort)
+          • SHA-256 hash all seed emails (raw addresses discarded immediately)
+          • Push hashed seed to each configured platform audience
+          • Log results to audience_mutation_logs in BigQuery
+          • Return internal result dict + Markdown deployment summary
+
+        Returns a dual payload:
+          backend_result     — structured dict with counts and per-platform status
+          markdown_summary   — formatted Markdown table for human review
+        """
+        from tools.audience_mutation_engine import AudienceMutationEngine
+
+        # Normalise seed_limit: 0 → None (no cap)
+        effective_limit = int(seed_limit) if seed_limit and seed_limit > 0 else None
+
+        engine = AudienceMutationEngine()
+        result = engine.run_mutation(
+            platform_configs=platform_configs,
+            seed_limit=effective_limit,
+        )
+
+        label = run_label or f"ICP mutation run {date.today().isoformat()}"
+
+        markdown_summary = _build_mutation_markdown(
+            run_label=label,
+            result=result,
+        )
+
+        log.info(
+            "operator.audience_mutation.complete",
+            run_id=result.get("run_id"),
+            seed_count=result.get("seed_count", 0),
+            platforms_pushed=result.get("platforms_pushed", 0),
+            ok=result.get("ok"),
+        )
+
+        return {
+            **result,
+            "run_label":      label,
+            "markdown_summary": markdown_summary,
+        }
+
+
+# ── Markdown builders (module-level, pure formatting) ────────────────────────
 
 _FRAMEWORK_LABELS = {
     "PAS":           "PAS — Problem · Agitate · Solution",
@@ -1135,3 +1277,192 @@ def _build_creative_brief_markdown(
     """)
 
     return f"{header}\n{copy_section}\n{visual_section}\n{footer}"
+
+
+# ── Audience mutation Markdown builder ────────────────────────────────────────
+
+_PLATFORM_DISPLAY_NAMES = {
+    "meta":       "Meta Ads",
+    "google_ads": "Google Ads",
+    "tiktok":     "TikTok Ads",
+    "reddit_ads": "Reddit Ads",
+}
+
+
+def _build_mutation_markdown(run_label: str, result: dict) -> str:
+    """
+    Build a structured Markdown analysis report for a lookalike seed mutation run.
+
+    Deterministic — no inference calls. Pure formatting from the result dict
+    returned by AudienceMutationEngine.run_mutation().
+
+    Sections:
+      1. Run summary (seed count, unique domains, ARR threshold)
+      2. Firmographic Over-Index table (top 3 traits per dimension)
+      3. Platform upload confirmation table (✅ / ❌)
+      4. ICP drift narrative (dominant shift headline)
+    """
+    today = date.today().isoformat()
+    ok    = result.get("ok", False)
+    run_id     = result.get("run_id", "—")
+    seed_count = result.get("seed_count", 0)
+    domains    = result.get("unique_domains", 0)
+    arr_p75    = result.get("arr_p75_threshold")
+    arr_str    = f"${arr_p75:,.0f}" if arr_p75 is not None else "n/a"
+    platforms_pushed = result.get("platforms_pushed", 0)
+    platforms_total  = result.get("platforms_total", 0)
+    firmographic     = result.get("firmographic_summary", {})
+    dominant_shift   = firmographic.get("dominant_shift", "—")
+    platform_results = result.get("platform_results", {})
+
+    overall_badge = "✅ Mutation complete" if ok else "❌ Mutation failed or partial"
+
+    lines: list[str] = [
+        f"## 🔄 Lookalike Seed Mutation Report",
+        f"**{run_label}**",
+        "",
+        f"| | |",
+        f"|-|-|",
+        f"| **Status** | {overall_badge} ({platforms_pushed}/{platforms_total} platforms) |",
+        f"| **Run ID** | `{run_id}` |",
+        f"| **Generated** | {today} |",
+        f"| **Seed emails pushed** | {seed_count:,} unique SHA-256 hashed contacts |",
+        f"| **Unique seed domains** | {domains:,} closed-won accounts (60-day rolling window) |",
+        f"| **ARR gating threshold (p75)** | {arr_str} |",
+        f"| **Dominant ICP shift** | **{dominant_shift}** |",
+        "",
+        "---",
+        "",
+    ]
+
+    # ── Section 1: Firmographic Over-Index Table ─────────────────────────────
+    lines.append("## 📊 Firmographic Over-Index Analysis")
+    lines.append("")
+    lines.append(
+        "*Over-index = how much more (or less) a trait appears in closed-won accounts "
+        "vs top-of-funnel lead mix. +30% means 1.3× over-represented in revenue cohort.*"
+    )
+    lines.append("")
+
+    top_industries = firmographic.get("top_industries", [])
+    top_emp        = firmographic.get("top_employee_ranges", [])
+    top_regions    = firmographic.get("top_regions", [])
+
+    # Build a unified 3-column table: rank | trait | over-index %
+    def _fmt_pct(v: float) -> str:
+        sign = "+" if v >= 0 else ""
+        return f"{sign}{v:.1f}%"
+
+    def _over_index_badge(v: float) -> str:
+        if v >= 25:
+            return "🟢 Strong"
+        if v >= 10:
+            return "🟡 Moderate"
+        if v >= 0:
+            return "⚪ Neutral"
+        return "🔴 Under-index"
+
+    lines += [
+        "### By Industry",
+        "",
+        "| Rank | Industry | Over-Index vs Lead Mix | Signal |",
+        "|------|----------|----------------------|--------|",
+    ]
+    if top_industries:
+        for i, item in enumerate(top_industries, 1):
+            pct    = item.get("over_index_pct", 0.0)
+            badge  = _over_index_badge(pct)
+            lines.append(f"| {i} | {item['trait']} | {_fmt_pct(pct)} | {badge} |")
+    else:
+        lines.append("| — | No firmographic data available | — | — |")
+    lines.append("")
+
+    lines += [
+        "### By Company Size",
+        "",
+        "| Rank | Employee Range | Over-Index vs Lead Mix | Signal |",
+        "|------|---------------|----------------------|--------|",
+    ]
+    if top_emp:
+        for i, item in enumerate(top_emp, 1):
+            pct   = item.get("over_index_pct", 0.0)
+            badge = _over_index_badge(pct)
+            lines.append(f"| {i} | {item['trait']} | {_fmt_pct(pct)} | {badge} |")
+    else:
+        lines.append("| — | No firmographic data available | — | — |")
+    lines.append("")
+
+    lines += [
+        "### By Region",
+        "",
+        "| Rank | Region | Over-Index vs Lead Mix | Signal |",
+        "|------|--------|----------------------|--------|",
+    ]
+    if top_regions:
+        for i, item in enumerate(top_regions, 1):
+            pct   = item.get("over_index_pct", 0.0)
+            badge = _over_index_badge(pct)
+            lines.append(f"| {i} | {item['trait']} | {_fmt_pct(pct)} | {badge} |")
+    else:
+        lines.append("| — | No firmographic data available | — | — |")
+    lines.append("")
+
+    lines.append("---")
+    lines.append("")
+
+    # ── Section 2: Platform Upload Confirmation Table ─────────────────────────
+    lines += [
+        "## 🚀 Platform Seed Upload Confirmation",
+        "",
+        "| Platform | Audience ID | Emails Pushed | Status |",
+        "|----------|-------------|--------------|--------|",
+    ]
+
+    for key, pr in platform_results.items():
+        platform   = pr.get("platform", key.split(":")[0])
+        aud_id     = pr.get("audience_id", "—")
+        emails     = pr.get("emails_pushed", 0)
+        status     = pr.get("status", "unknown")
+        error      = pr.get("error", "")
+        plat_label = _PLATFORM_DISPLAY_NAMES.get(platform, platform.replace("_", " ").title())
+
+        if status == "ok":
+            status_cell = f"✅ Uploaded ({emails:,} emails)"
+        elif status == "unsupported":
+            status_cell = "⚠️ Unsupported platform"
+        elif status == "error":
+            short_err   = error[:60] + "…" if len(error) > 60 else error
+            status_cell = f"❌ Failed — {short_err}"
+        else:
+            status_cell = f"⚠️ {status}"
+
+        lines.append(f"| {plat_label} | `{aud_id}` | {emails:,} | {status_cell} |")
+
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+
+    # ── Section 3: ICP Drift Narrative ────────────────────────────────────────
+    lines += [
+        "## 💡 ICP Drift Summary",
+        "",
+        f"> **Dominant signal:** {dominant_shift}",
+        ">",
+        "> The seed cohort above reflects accounts that closed in the last 60 days "
+        "and ranked in the top-25% ARR tier. The firmographic over-index scores "
+        "identify which buyer profiles are disproportionately converting to revenue "
+        "relative to current top-of-funnel lead mix.",
+        ">",
+        "> **Recommended action:** Review the over-indexing industries and size tiers "
+        "with your demand gen team. If the mutation signal is materially different "
+        "from your current ICP definition, consider updating:",
+        ">   1. Paid media audience targeting segments",
+        ">   2. ICP score thresholds in `company_profiles.icp_score`",
+        ">   3. Content and creative messaging for over-indexing verticals",
+        "",
+        f"*Seed mutation executed by the Paid Media Operator Agent. "
+        f"Raw contact data was SHA-256 hashed and discarded — "
+        f"zero PII persisted. Logged to `audience_mutation_logs` (run_id: `{run_id}`).*",
+    ]
+
+    return "\n".join(lines)

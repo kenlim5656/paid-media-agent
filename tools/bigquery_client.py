@@ -118,6 +118,12 @@ _TABLES: dict[str, str] = {
     "social_trend_signals":     "social_trend_signals",
     "social_mentions_staging":  "social_mentions_staging",
 
+    # ── Audience mutation layer — table + view (14_audience_mutation.sql) ─────
+    # Written by tools/audience_mutation_engine.py AudienceMutationEngine.
+    "audience_mutation_logs":    "audience_mutation_logs",
+    # Read by audience_mutation_engine._extract_seed_cohort().
+    "v_lookalike_mutation_seed": "v_lookalike_mutation_seed",
+
     # ── Source / staging tables (org-defined, outside schema DDL) ─────────────
     # These are the raw source tables that the agents read from.
     # Names are configurable via settings but default to sensible values.
