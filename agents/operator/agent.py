@@ -9,8 +9,12 @@ Runs daily after the Analyst. Reads attribution_channel_summary and acts on insi
 All write actions are logged to operator_action_log and operator_pending_approvals.
 Platform-agnostic: supports GMP, Meta, LinkedIn, Google Ads, TikTok via platform adapters.
 """
+import json
+import textwrap
 import structlog
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+
+import anthropic
 
 from agents.base import BaseAgent
 from config import settings
@@ -166,6 +170,91 @@ class OperatorAgent(BaseAgent):
                     "amount_usd":       {"type": "number"},
                 },
                 "required": ["action_id", "platform", "advertiser_id", "source_entity_id", "target_entity_id", "amount_usd"],
+            },
+        },
+        {
+            "name": "generate_creative_campaign_brief",
+            "description": (
+                "Generate a full creative campaign package for one or more channels. "
+                "Queries historical top-performing ad copy (by CVR/CTR) as few-shot context, "
+                "then produces: (1) platform-ready text copy variants across PAS, AIDA, and "
+                "Benefit-Driven frameworks, with hard character-limit validation enforced per "
+                "platform; (2) production-grade visual creative briefs for each recommended "
+                "asset format, including visual concept, aesthetic guidance, on-screen copy "
+                "timeline, and AI image/video generation prompt. "
+                "Returns a dual payload: structured JSON (text_copy_variants + "
+                "visual_creative_briefs) for pipeline storage, and a formatted Markdown "
+                "deployment package for the design team."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "channels": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Target channel(s) to write copy for. "
+                            "Supported: 'meta', 'linkedin', 'google_ads', 'tiktok', 'display'. "
+                            "Example: ['meta', 'linkedin']"
+                        ),
+                    },
+                    "value_proposition": {
+                        "type": "string",
+                        "description": (
+                            "The core product value proposition — what the product does and "
+                            "the primary outcome it delivers. Be specific: include the product "
+                            "name, key capability, and measurable outcome if known. "
+                            "Example: '[Product] auto-routes intent signals from your website "
+                            "to Salesforce in real time, cutting MQL response time by 60%.'"
+                        ),
+                    },
+                    "target_persona": {
+                        "type": "string",
+                        "description": (
+                            "Target audience description. Include job title, company type/size, "
+                            "and the primary pain point this campaign addresses. "
+                            "Example: 'VP of Demand Generation at B2B SaaS companies (100-1000 "
+                            "employees) who struggles with misaligned MQL-to-SQL handoffs.'"
+                        ),
+                    },
+                    "copy_framework": {
+                        "type": "string",
+                        "enum": ["PAS", "AIDA", "benefit_driven", "all"],
+                        "default": "all",
+                        "description": (
+                            "Which copywriting framework(s) to generate variants for. "
+                            "'all' returns one variant per framework per channel."
+                        ),
+                    },
+                    "lookback_days": {
+                        "type": "integer",
+                        "default": 90,
+                        "description": "Days to look back when fetching historical top-performers for few-shot context.",
+                    },
+                    "rank_by": {
+                        "type": "string",
+                        "enum": ["cvr", "ctr", "roas", "attributed_cpa"],
+                        "default": "cvr",
+                        "description": "Metric to rank historical top-performers by.",
+                    },
+                    "campaign_objective": {
+                        "type": "string",
+                        "description": (
+                            "Optional. Campaign goal context for brief alignment: "
+                            "'lead_gen', 'demo_request', 'trial_signup', 'awareness', "
+                            "'retargeting', 'upsell'. Defaults to 'lead_gen'."
+                        ),
+                    },
+                    "brand_notes": {
+                        "type": "string",
+                        "description": (
+                            "Optional. Any brand voice, tone constraints, or product-specific "
+                            "language to apply (e.g. 'avoid using the word integration', "
+                            "'our brand voice is authoritative but approachable')."
+                        ),
+                    },
+                },
+                "required": ["channels", "value_proposition", "target_persona"],
             },
         },
     ]
@@ -535,3 +624,485 @@ class OperatorAgent(BaseAgent):
                 """)
         except Exception as exc:
             log.warning("operator.status_update_failed", action_id=action_id, error=str(exc))
+
+    # ── Creative Brief Tool ───────────────────────────────────────────────────
+
+    def _tool_generate_creative_campaign_brief(
+        self,
+        channels: list[str],
+        value_proposition: str,
+        target_persona: str,
+        copy_framework: str = "all",
+        lookback_days: int = 90,
+        rank_by: str = "cvr",
+        campaign_objective: str | None = None,
+        brand_notes: str | None = None,
+    ) -> dict:
+        """
+        Full creative engine: queries historical performance data as few-shot context,
+        then calls Claude to generate platform-validated copy variants and production
+        visual creative briefs.
+
+        Returns a dual payload:
+          text_copy_variants    — list of per-channel, per-framework copy dicts
+          visual_creative_briefs — list of asset production brief dicts
+          markdown_summary       — formatted deployment package for the design team
+          few_shot_count         — number of historical ads used as context
+          top_format_by_cvr      — highest-CVR asset format from historical data
+        """
+        from tools.creative_insights_client import (
+            get_top_performing_ads,
+            get_asset_type_performance_correlation,
+            format_few_shot_context,
+            format_asset_correlation_context,
+        )
+
+        objective = campaign_objective or "lead_gen"
+
+        # ── 1. Fetch historical context ─────────────────────────────────────
+        top_ads: list[dict] = []
+        asset_correlations: list[dict] = []
+        try:
+            top_ads = get_top_performing_ads(
+                channels=channels,
+                lookback_days=lookback_days,
+                rank_by=rank_by,
+                limit=20,
+            )
+            asset_correlations = get_asset_type_performance_correlation(
+                channels=channels,
+                lookback_days=lookback_days,
+            )
+            log.info(
+                "operator.creative_brief.context_loaded",
+                top_ad_count=len(top_ads),
+                asset_format_count=len(asset_correlations),
+            )
+        except Exception as exc:
+            log.warning("operator.creative_brief.context_fetch_failed", error=str(exc))
+
+        few_shot_text  = format_few_shot_context(top_ads, max_examples=5)
+        asset_ctx_text = format_asset_correlation_context(asset_correlations)
+        top_format     = asset_correlations[0].get("creative_format", "unknown") if asset_correlations else "unknown"
+        top_format_cvr = asset_correlations[0].get("avg_cvr", 0.0) if asset_correlations else 0.0
+
+        # ── 2. Determine frameworks to generate ─────────────────────────────
+        if copy_framework == "all":
+            frameworks_requested = ["PAS", "AIDA", "benefit_driven"]
+        else:
+            frameworks_requested = [copy_framework]
+
+        # ── 3. Build the generation prompt ──────────────────────────────────
+        channels_str   = ", ".join(channels)
+        framework_list = ", ".join(frameworks_requested)
+
+        _PLATFORM_CONSTRAINTS = {
+            "meta": {
+                "primary_text_max": 125,
+                "headline_max": 27,
+                "description_max": 27,
+                "fields": ["primary_text", "headline", "description"],
+                "note": "Primary text > 125 chars is truncated in feed. Headline appears in link preview tile.",
+            },
+            "linkedin": {
+                "primary_text_max": 150,
+                "headline_max": 70,
+                "description_max": 100,
+                "fields": ["primary_text", "headline", "description"],
+                "note": "Primary text > 150 chars requires 'see more' click. CTA must land before char 150.",
+            },
+            "google_ads": {
+                "headline_max": 30,
+                "description_max": 90,
+                "fields": ["headlines", "descriptions"],
+                "note": "RSA: provide 3 headline variants and 2 description variants. Each headline ≤ 30 chars. Each description ≤ 90 chars.",
+            },
+            "tiktok": {
+                "ad_text_max": 100,
+                "fields": ["ad_text"],
+                "note": "Ad text appears as caption overlay. Keep scannable — one idea. ≤ 100 chars.",
+            },
+            "display": {
+                "headline_max": 25,
+                "description_max": 90,
+                "fields": ["headline", "description"],
+                "note": "Standard display: headline ≤ 25 chars, description ≤ 90 chars.",
+            },
+        }
+
+        constraints_block = "\n".join(
+            f"  {ch}: {json.dumps(_PLATFORM_CONSTRAINTS.get(ch, {'note': 'standard platform limits'}), indent=2)}"
+            for ch in channels
+        )
+
+        brand_block = f"\nBrand voice / constraints:\n{brand_notes}\n" if brand_notes else ""
+
+        generation_prompt = textwrap.dedent(f"""
+            You are a senior direct-response copywriter and creative director.
+
+            Generate a complete creative campaign package. Return ONLY a valid JSON object
+            matching the schema below. No markdown, no explanation outside the JSON.
+
+            === Campaign Brief ===
+            Product / Value Proposition:
+            {value_proposition}
+
+            Target Persona:
+            {target_persona}
+
+            Campaign Objective: {objective}
+            Target Channels: {channels_str}
+            Frameworks requested: {framework_list}
+            {brand_block}
+            === Platform Constraints ===
+            {constraints_block}
+
+            === Historical Performance Context (few-shot) ===
+            {few_shot_text}
+
+            {asset_ctx_text}
+
+            === Output JSON Schema ===
+            {{
+              "text_copy_variants": [
+                {{
+                  "framework": "PAS" | "AIDA" | "benefit_driven",
+                  "channel": "<channel name>",
+                  "primary_text": "<string — used for meta/linkedin/tiktok>",
+                  "headline": "<string>",
+                  "description": "<string>",
+                  "headlines": ["<string>", ...],      // google_ads only — 3 variants
+                  "descriptions": ["<string>", ...],   // google_ads only — 2 variants
+                  "ad_text": "<string>",               // tiktok only
+                  "char_validation": {{
+                    "primary_text": <int>,
+                    "headline": <int>,
+                    "description": <int>,
+                    "passes": true | false,
+                    "violations": ["<field>: <N> chars exceeds limit of <M>"]
+                  }}
+                }}
+                // one object per framework × channel combination
+              ],
+              "visual_creative_briefs": [
+                {{
+                  "brief_id": <int>,
+                  "asset_type": "<e.g. 9:16 Vertical Video>",
+                  "placement_targets": ["<platform/placement>", ...],
+                  "aspect_ratio": "<e.g. 9:16>",
+                  "duration_seconds": <int | null>,
+                  "recommended_format": "video" | "image" | "carousel",
+                  "visual_concept": "<psychological hook + visual metaphor in 2-3 sentences>",
+                  "aesthetic_guidance": {{
+                    "color_palette": "<primary, secondary, accent with intent>",
+                    "lighting": "<hard directional | soft diffuse | high-contrast dramatic>",
+                    "composition": "<minimalist | collage | screen-capture | lifestyle>",
+                    "tone_markers": ["<adjective>", "<adjective>", "<adjective>"]
+                  }},
+                  "on_screen_copy": [
+                    {{
+                      "timestamp_or_zone": "<0:00-0:02 or Top 20%>",
+                      "layer": "<Hook | Body | CTA | etc.>",
+                      "copy": "<exact text>",
+                      "style": "<Bold | Regular | Brand color BG>"
+                    }}
+                  ],
+                  "ai_image_prompt": "<detailed generation prompt for Midjourney/DALL-E/Firefly>"
+                }}
+                // 2-3 briefs covering the highest-CVR formats from the performance data
+              ]
+            }}
+
+            Rules:
+            - Every copy variant MUST pass char_validation for its channel constraints.
+            - Rewrite any field that would exceed the limit — never truncate mid-word.
+            - Each framework variant must be structurally distinct — different hook, different proof, different CTA.
+            - Headlines for Google RSA must all be ≤ 30 characters.
+            - TikTok ad_text must be ≤ 100 characters.
+            - LinkedIn primary_text must deliver the key message within the first 150 characters.
+            - Do not plagiarise the few-shot examples — use them as structural pattern reference only.
+            - visual_creative_briefs must be grounded in the best-performing format(s) from the asset correlation data.
+            - The ai_image_prompt must be production-grade (camera angle, lighting, composition, style flags, --ar).
+        """).strip()
+
+        # ── 4. Claude sub-inference call ────────────────────────────────────
+        generation_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        try:
+            gen_response = generation_client.messages.create(
+                model=settings.claude_model,
+                max_tokens=8192,
+                system=(
+                    "You are a creative campaign generator. "
+                    "Output ONLY a valid JSON object. No preamble, no markdown fences, "
+                    "no explanation. Start your response with '{' and end with '}'."
+                ),
+                messages=[{"role": "user", "content": generation_prompt}],
+            )
+            raw_json = gen_response.content[0].text.strip()
+            # Strip accidental markdown fences if the model adds them
+            if raw_json.startswith("```"):
+                raw_json = raw_json.split("\n", 1)[1]
+                raw_json = raw_json.rsplit("```", 1)[0].strip()
+            structured = json.loads(raw_json)
+        except json.JSONDecodeError as exc:
+            log.error("operator.creative_brief.json_parse_failed", error=str(exc))
+            return {
+                "ok": False,
+                "error": f"JSON parse failed: {exc}",
+                "raw_response": raw_json[:500] if "raw_json" in dir() else "(no response)",
+            }
+        except Exception as exc:
+            log.error("operator.creative_brief.generation_failed", error=str(exc))
+            return {"ok": False, "error": str(exc)}
+
+        text_variants = structured.get("text_copy_variants", [])
+        visual_briefs = structured.get("visual_creative_briefs", [])
+
+        # ── 5. Build Markdown deployment package ────────────────────────────
+        markdown_summary = _build_creative_brief_markdown(
+            channels=channels,
+            value_proposition=value_proposition,
+            target_persona=target_persona,
+            objective=objective,
+            text_variants=text_variants,
+            visual_briefs=visual_briefs,
+            few_shot_count=len(top_ads),
+            lookback_days=lookback_days,
+            rank_by=rank_by,
+            top_format=top_format,
+            top_format_cvr=top_format_cvr,
+        )
+
+        log.info(
+            "operator.creative_brief.generated",
+            channels=channels,
+            frameworks=frameworks_requested,
+            copy_variants=len(text_variants),
+            visual_briefs=len(visual_briefs),
+            few_shot_count=len(top_ads),
+        )
+
+        return {
+            "ok": True,
+            "text_copy_variants":   text_variants,
+            "visual_creative_briefs": visual_briefs,
+            "markdown_summary":     markdown_summary,
+            "few_shot_count":       len(top_ads),
+            "top_format_by_cvr":    top_format,
+            "top_format_cvr":       top_format_cvr,
+            "channels":             channels,
+            "frameworks_generated": frameworks_requested,
+        }
+
+
+# ── Markdown builder (module-level, pure formatting) ─────────────────────────
+
+_FRAMEWORK_LABELS = {
+    "PAS":           "PAS — Problem · Agitate · Solution",
+    "AIDA":          "AIDA — Attention · Interest · Desire · Action",
+    "benefit_driven": "Benefit-Driven Direct Hook",
+}
+
+_CHANNEL_FIELDS: dict[str, list[str]] = {
+    "meta":       ["primary_text", "headline", "description"],
+    "linkedin":   ["primary_text", "headline", "description"],
+    "google_ads": ["headlines", "descriptions"],
+    "tiktok":     ["ad_text"],
+    "display":    ["headline", "description"],
+}
+
+_CHAR_LIMITS: dict[str, dict[str, int]] = {
+    "meta":       {"primary_text": 125, "headline": 27, "description": 27},
+    "linkedin":   {"primary_text": 150, "headline": 70, "description": 100},
+    "google_ads": {"headline": 30, "description": 90},
+    "tiktok":     {"ad_text": 100},
+    "display":    {"headline": 25, "description": 90},
+}
+
+
+def _char_status(text: str, limit: int) -> str:
+    """Return '✅' if within limit, '⚠️ OVER' if not."""
+    n = len(text or "")
+    return f"{n}/{limit} ✅" if n <= limit else f"{n}/{limit} ⚠️ OVER"
+
+
+def _build_copy_matrix_section(text_variants: list[dict], channels: list[str]) -> str:
+    """Render the copy matrix section of the Markdown brief."""
+    lines: list[str] = ["## 📝 Copy Matrix\n"]
+
+    # Group variants by framework, then by channel
+    from collections import defaultdict
+    by_framework: dict[str, dict[str, dict]] = defaultdict(dict)
+    for v in text_variants:
+        fw = v.get("framework", "unknown")
+        ch = v.get("channel", "unknown")
+        by_framework[fw][ch] = v
+
+    framework_order = ["PAS", "AIDA", "benefit_driven"]
+    for fw in framework_order:
+        if fw not in by_framework:
+            continue
+        fw_label = _FRAMEWORK_LABELS.get(fw, fw)
+        lines.append(f"### Framework: {fw_label}\n")
+
+        for ch in channels:
+            v = by_framework[fw].get(ch)
+            if not v:
+                continue
+            ch_display = ch.replace("_", " ").title()
+            lines.append(f"#### {ch_display}\n")
+            limits = _CHAR_LIMITS.get(ch, {})
+
+            if ch == "google_ads":
+                headlines = v.get("headlines") or []
+                descs     = v.get("descriptions") or []
+                lines.append("**Headlines** (≤ 30 chars each):\n")
+                for i, hl in enumerate(headlines, 1):
+                    status = _char_status(hl, 30)
+                    lines.append(f"{i}. \"{hl}\" — {status}")
+                lines.append("\n**Descriptions** (≤ 90 chars each):\n")
+                for i, d in enumerate(descs, 1):
+                    status = _char_status(d, 90)
+                    lines.append(f"{i}. \"{d}\" — {status}")
+            elif ch == "tiktok":
+                ad_text = v.get("ad_text", "")
+                status  = _char_status(ad_text, limits.get("ad_text", 100))
+                lines += [
+                    "| Field | Copy | Length |",
+                    "|-------|------|--------|",
+                    f"| Ad Text | {ad_text} | {status} |",
+                ]
+            else:
+                # meta, linkedin, display
+                rows = []
+                for field in _CHANNEL_FIELDS.get(ch, []):
+                    val    = v.get(field, "")
+                    lim    = limits.get(field, 9999)
+                    status = _char_status(val, lim)
+                    label  = field.replace("_", " ").title()
+                    rows.append(f"| {label} | {val} | {status} |")
+                lines += [
+                    "| Field | Copy | Length |",
+                    "|-------|------|--------|",
+                ] + rows
+
+            violations = (v.get("char_validation") or {}).get("violations", [])
+            if violations:
+                lines.append(f"\n> ⚠️ **Violations:** {'; '.join(violations)}")
+            lines.append("")  # blank line between channels
+
+        lines.append("---\n")
+
+    return "\n".join(lines)
+
+
+def _build_visual_briefs_section(visual_briefs: list[dict]) -> str:
+    """Render the visual creative briefs section as blockquotes."""
+    if not visual_briefs:
+        return "## 🎨 Visual Creative Briefs\n\n*(No briefs generated.)*\n"
+
+    lines: list[str] = ["## 🎨 Visual Creative Briefs\n"]
+
+    for brief in visual_briefs:
+        bid    = brief.get("brief_id", "?")
+        atype  = brief.get("asset_type", "Unknown")
+        ratio  = brief.get("aspect_ratio", "")
+        dur    = brief.get("duration_seconds")
+        places = ", ".join(brief.get("placement_targets") or [])
+        dur_str = f" · {dur}s" if dur else ""
+
+        lines.append(f"> ### Brief {bid}: {atype} — {places}")
+        lines.append(f"> **Format:** {ratio}{dur_str} · {brief.get('recommended_format', 'TBD')}")
+        lines.append(">")
+
+        concept = brief.get("visual_concept", "")
+        if concept:
+            lines.append(f"> **Visual Concept:**")
+            lines.append(f"> {concept}")
+            lines.append(">")
+
+        aesthetic = brief.get("aesthetic_guidance") or {}
+        if aesthetic:
+            lines.append("> **Aesthetic Guidance:**")
+            for k, v in aesthetic.items():
+                label = k.replace("_", " ").title()
+                if isinstance(v, list):
+                    v = " · ".join(v)
+                lines.append(f"> - **{label}:** {v}")
+            lines.append(">")
+
+        osc = brief.get("on_screen_copy") or []
+        if osc:
+            lines.append("> **On-Screen Copy:**")
+            lines.append(">")
+            lines.append("> | Timestamp / Zone | Layer | Copy | Style |")
+            lines.append("> |-------------------|-------|------|-------|")
+            for row in osc:
+                ts    = row.get("timestamp_or_zone", "")
+                layer = row.get("layer", "")
+                copy  = row.get("copy", "")
+                style = row.get("style", "")
+                lines.append(f"> | {ts} | {layer} | {copy} | {style} |")
+            lines.append(">")
+
+        ai_prompt = brief.get("ai_image_prompt", "")
+        if ai_prompt:
+            lines.append("> **AI Generation Prompt:**")
+            lines.append("> ```")
+            # Wrap long prompts for readability inside the blockquote
+            for chunk in textwrap.wrap(ai_prompt, width=90):
+                lines.append(f"> {chunk}")
+            lines.append("> ```")
+
+        lines.append("")  # blank line between briefs
+
+    return "\n".join(lines)
+
+
+def _build_creative_brief_markdown(
+    channels: list[str],
+    value_proposition: str,
+    target_persona: str,
+    objective: str,
+    text_variants: list[dict],
+    visual_briefs: list[dict],
+    few_shot_count: int,
+    lookback_days: int,
+    rank_by: str,
+    top_format: str,
+    top_format_cvr: float,
+) -> str:
+    """
+    Assemble the full Markdown deployment package from structured data.
+    Deterministic — does not call Claude. Pure string formatting.
+    """
+    channels_display = " · ".join(ch.replace("_", " ").title() for ch in channels)
+    today = date.today().isoformat()
+
+    header = textwrap.dedent(f"""\
+        ## 🎯 Creative Campaign Brief — {channels_display}
+
+        | | |
+        |-|-|
+        | **Target Persona** | {target_persona} |
+        | **Objective** | {objective.replace("_", " ").title()} |
+        | **Value Proposition** | {value_proposition[:100]}{"..." if len(value_proposition) > 100 else ""} |
+        | **Generated** | {today} |
+        | **Few-shot context** | {few_shot_count} historical top-performers ({lookback_days}-day lookback, ranked by {rank_by}) |
+        | **Top format by CVR** | {top_format} ({top_format_cvr * 100:.2f}% CVR) |
+
+        ---
+    """)
+
+    copy_section   = _build_copy_matrix_section(text_variants, channels)
+    visual_section = _build_visual_briefs_section(visual_briefs)
+
+    footer = textwrap.dedent(f"""\
+        ---
+
+        *Brief generated by the Paid Media Agent creative engine.*
+        *Platform constraints enforced: Google RSA ≤ 30/90 chars · LinkedIn ≤ 150 chars (primary) · Meta ≤ 125/27 chars · TikTok ≤ 100 chars.*
+        *Visual briefs follow the Multi-Asset Creative Brief Framework (see `agents/operator/skills/copy_assistant.md`).*
+    """)
+
+    return f"{header}\n{copy_section}\n{visual_section}\n{footer}"
