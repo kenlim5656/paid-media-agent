@@ -101,6 +101,11 @@ _TABLES: dict[str, str] = {
     # Read by tools/meridian_analyst_engine._get_roi_priors_from_bq().
     "v_incrementality_roi_priors": "v_incrementality_roi_priors",
 
+    # ── Causal impact layer — tables (10_causal_impact.sql) ──────────────────
+    # Written by tools/causal_analyst_engine.py after each BSTS analysis run.
+    "causal_impact_runs":    "causal_impact_runs",
+    "causal_impact_metrics": "causal_impact_metrics",
+
     # ── Source / staging tables (org-defined, outside schema DDL) ─────────────
     # These are the raw source tables that the agents read from.
     # Names are configurable via settings but default to sensible values.

@@ -476,6 +476,114 @@ class AnalystAgent(BaseAgent):
             },
         },
         {
+            "name": "analyze_marketing_intervention",
+            "description": (
+                "Run a Bayesian Structural Time Series (BSTS) causal impact analysis to "
+                "quantify the retrospective effect of an unplanned marketing event. "
+                "Fetches daily target metric + control series from platform_daily_spend, "
+                "fits a LocalLinearTrend + Seasonal(7) + LinearRegression model on the "
+                "pre-intervention baseline via JAX-backed HMC (tfp.substrates.jax.sts), "
+                "projects the counterfactual for the post-intervention window, and computes: "
+                "absolute_effect, relative_effect_pct, and posterior_tail_probability "
+                "(Bayesian p-value analog). "
+                "Returns a structured result dict AND a formatted Markdown summary table "
+                "suitable for direct agent response. "
+                "Writes results to causal_impact_runs and causal_impact_metrics in BigQuery. "
+                "Use cases: spend halts, creative rotation changes, influencer spikes, "
+                "platform outages, geo-level A/B tests with retrospective measurement. "
+                "Requires minimum 4:1 pre:post observation ratio. "
+                "Requires 'paid-media-agent[causal]' optional dependencies."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "target_metric": {
+                        "type": "string",
+                        "enum": ["conversions", "impressions", "spend", "clicks"],
+                        "description": (
+                            "The metric to analyze. Maps to platform_daily_spend columns: "
+                            "conversions → platform_conversions, "
+                            "impressions → impressions, "
+                            "spend → spend (NUMERIC), "
+                            "clicks → clicks."
+                        ),
+                    },
+                    "target_channel": {
+                        "type": "string",
+                        "description": (
+                            "Platform to analyze, e.g. 'google_ads', 'meta', 'tiktok'. "
+                            "Must match the platform field in platform_daily_spend. "
+                            "Omit to analyze the aggregate across all channels."
+                        ),
+                    },
+                    "target_geo": {
+                        "type": "string",
+                        "description": (
+                            "ISO country code filter (e.g. 'US', 'GB'). "
+                            "Omit to include all geos. "
+                            "Must match geo_country_code in platform_daily_spend."
+                        ),
+                    },
+                    "pre_period_from": {
+                        "type": "string",
+                        "description": (
+                            "Start of pre-intervention baseline window. Format: YYYY-MM-DD. "
+                            "Should be at least 4× the post-period length for stable BSTS inference."
+                        ),
+                    },
+                    "pre_period_to": {
+                        "type": "string",
+                        "description": (
+                            "End of pre-intervention baseline (day BEFORE the event). "
+                            "Format: YYYY-MM-DD."
+                        ),
+                    },
+                    "post_period_from": {
+                        "type": "string",
+                        "description": "Start of the intervention / event window. Format: YYYY-MM-DD.",
+                    },
+                    "post_period_to": {
+                        "type": "string",
+                        "description": "End of the intervention / event window. Format: YYYY-MM-DD.",
+                    },
+                    "control_channels": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Optional list of platform names to use as control covariates "
+                            "(e.g. ['meta', 'linkedin'] when analyzing a Google Ads outage). "
+                            "Control channels must NOT have been affected by the same event. "
+                            "Including strong controls tightens the counterfactual CI significantly."
+                        ),
+                    },
+                    "intervention_description": {
+                        "type": "string",
+                        "description": (
+                            "Human-readable description of the marketing event being analyzed, "
+                            "e.g. 'Google Ads paused for 12 days due to billing issue', "
+                            "'Meta creative rotation — UGC vs. studio assets'."
+                        ),
+                    },
+                    "n_draws": {
+                        "type": "integer",
+                        "description": (
+                            "HMC posterior draws per chain. Default 200. "
+                            "Reduce to 100 for quick checks; increase to 500 for final analysis. "
+                            "Runtime: ~1–5 minutes on 4-vCPU Cloud Run for typical series length."
+                        ),
+                    },
+                    "analyst_notes": {
+                        "type": "string",
+                        "description": "Optional notes about design decisions, data quality, or interpretation caveats.",
+                    },
+                },
+                "required": [
+                    "target_metric", "pre_period_from", "pre_period_to",
+                    "post_period_from", "post_period_to",
+                ],
+            },
+        },
+        {
             "name": "complete_attribution_run",
             "description": "Mark an attribution run as completed or failed in attribution_runs.",
             "input_schema": {
@@ -1506,6 +1614,240 @@ class AnalystAgent(BaseAgent):
                 "incrementality_experiments",
                 "incrementality_lift_results",
             ],
+        }
+
+    def _tool_analyze_marketing_intervention(
+        self,
+        target_metric:            str,
+        pre_period_from:          str,
+        pre_period_to:            str,
+        post_period_from:         str,
+        post_period_to:           str,
+        target_channel:           str | None = None,
+        target_geo:               str | None = None,
+        control_channels:         list[str] | None = None,
+        intervention_description: str | None = None,
+        n_draws:                  int = 200,
+        analyst_notes:            str | None = None,
+    ) -> dict:
+        """
+        Bayesian Structural Time Series causal impact analysis (Task 24).
+
+        Fetches daily metric data from platform_daily_spend, constructs a CausalInputData
+        object, delegates to causal_analyst_engine.run_causal_analysis() for BSTS inference,
+        and returns both the structured result dict and a Markdown summary table.
+
+        Returns JSON-ready dict with:
+            markdown_summary  — formatted Markdown table for agent response
+            cumulative_effect, relative_effect_pct — headline numbers
+            posterior_tail_prob — Bayesian p-value analog
+            series — full daily counterfactual + effect series
+            bq_write — confirmation of BigQuery streaming insert
+        """
+        try:
+            import pandas as pd
+            from tools.causal_analyst_engine import CausalInputData, run_causal_analysis
+        except ImportError as exc:
+            return {
+                "status": "dependency_missing",
+                "error": str(exc),
+                "fix": "pip install 'paid-media-agent[causal]'",
+                "note": (
+                    "The BSTS causal impact engine requires tensorflow-probability[jax] and jax[cpu]. "
+                    "These are not in the core install. Run: pip install 'paid-media-agent[causal]'"
+                ),
+            }
+
+        # ── 1. Validate dates & build range ────────────────────────────────────
+        safe_channel = (target_channel or "").replace("'", "''")
+        safe_geo     = (target_geo     or "").replace("'", "''")
+
+        # Column mapping for target_metric → platform_daily_spend SQL expression
+        _METRIC_SQL = {
+            "conversions": "SUM(platform_conversions)",
+            "impressions": "SUM(impressions)",
+            "spend":       "SUM(CAST(spend AS FLOAT64))",
+            "clicks":      "SUM(clicks)",
+        }
+        if target_metric not in _METRIC_SQL:
+            return {
+                "error": f"Unknown target_metric: {target_metric!r}. "
+                         f"Must be one of: {list(_METRIC_SQL.keys())}",
+            }
+
+        metric_agg  = _METRIC_SQL[target_metric]
+        channel_filter = f"AND platform = '{safe_channel}'" if safe_channel else ""
+        geo_filter     = f"AND geo_country_code = '{safe_geo}'" if safe_geo else ""
+
+        full_from = pre_period_from
+        full_to   = post_period_to
+
+        # ── 2. Fetch target metric series ──────────────────────────────────────
+        target_sql = f"""
+        SELECT date, {metric_agg} AS value
+        FROM {bq.table_ref('platform_daily_spend')}
+        WHERE date BETWEEN '{full_from}' AND '{full_to}'
+          {channel_filter}
+          {geo_filter}
+        GROUP BY date
+        ORDER BY date
+        """
+        try:
+            target_rows = bq.run_query(target_sql)
+        except Exception as exc:
+            return {
+                "error": f"Failed to fetch target metric from BQ: {exc}",
+                "hint": "Verify target_channel matches the platform field in platform_daily_spend.",
+            }
+
+        if not target_rows:
+            return {
+                "error": "No data found for the specified target_metric, channel, and date range.",
+                "target_metric": target_metric,
+                "target_channel": target_channel,
+                "period": f"{full_from} → {full_to}",
+                "hint": "Check that platform_daily_spend is populated for these dates and channel.",
+            }
+
+        # Align to full date range (fill missing days with 0)
+        all_dates = pd.date_range(full_from, full_to, freq="D")
+        target_by_date = {str(r["date"])[:10]: float(r["value"] or 0.0) for r in target_rows}
+        aligned_values = [target_by_date.get(str(d.date()), 0.0) for d in all_dates]
+        aligned_dates  = [str(d.date()) for d in all_dates]
+
+        pre_mask  = [d <= pre_period_to   for d in aligned_dates]
+        post_mask = [d >= post_period_from for d in aligned_dates]
+
+        import numpy as np
+        arr = np.array(aligned_values, dtype=float)
+        y_pre  = arr[[i for i, m in enumerate(pre_mask)  if m]]
+        y_post = arr[[i for i, m in enumerate(post_mask) if m]]
+        dates_pre  = [d for d, m in zip(aligned_dates, pre_mask)  if m]
+        dates_post = [d for d, m in zip(aligned_dates, post_mask) if m]
+
+        if len(y_pre) == 0 or len(y_post) == 0:
+            return {
+                "error": "Pre or post period yielded zero data points after date alignment.",
+                "n_pre": len(y_pre),
+                "n_post": len(y_post),
+                "hint": "Check pre_period_to < post_period_from (non-overlapping windows).",
+            }
+
+        # ── 3. Fetch control series (optional) ────────────────────────────────
+        control_pre:  np.ndarray | None = None
+        control_post: np.ndarray | None = None
+        control_names: list[str] = []
+
+        if control_channels:
+            ctrl_channels_safe = [c.replace("'", "''") for c in control_channels]
+            ctrl_list = ", ".join(f"'{c}'" for c in ctrl_channels_safe)
+
+            ctrl_sql = f"""
+            SELECT date, platform, {metric_agg} AS value
+            FROM {bq.table_ref('platform_daily_spend')}
+            WHERE date BETWEEN '{full_from}' AND '{full_to}'
+              AND platform IN ({ctrl_list})
+              {geo_filter}
+            GROUP BY date, platform
+            ORDER BY date, platform
+            """
+            try:
+                ctrl_rows = bq.run_query(ctrl_sql)
+            except Exception as exc:
+                log.warning("analyst.causal.control_fetch_failed", error=str(exc))
+                ctrl_rows = []
+
+            if ctrl_rows:
+                # Pivot to [n_dates, K] matrix aligned to same date range
+                ctrl_df = pd.DataFrame(ctrl_rows)
+                ctrl_df["date"] = ctrl_df["date"].astype(str).str[:10]
+                ctrl_df["value"] = ctrl_df["value"].fillna(0.0).astype(float)
+                pivoted = ctrl_df.pivot_table(
+                    index="date", columns="platform", values="value", aggfunc="sum"
+                ).reindex(aligned_dates, fill_value=0.0)
+
+                control_names = list(pivoted.columns)
+                ctrl_arr = pivoted.to_numpy(dtype=float)
+
+                control_pre  = ctrl_arr[[i for i, m in enumerate(pre_mask)  if m], :]
+                control_post = ctrl_arr[[i for i, m in enumerate(post_mask) if m], :]
+
+        # ── 4. Build CausalInputData and run analysis ─────────────────────────
+        data = CausalInputData(
+            y_pre=y_pre,
+            y_post=y_post,
+            control_pre=control_pre,
+            control_post=control_post,
+            dates_pre=dates_pre,
+            dates_post=dates_post,
+            control_names=control_names,
+            target_metric=target_metric,
+            target_channel=target_channel,
+            target_geo=target_geo,
+        )
+
+        try:
+            pipeline_result = run_causal_analysis(
+                data=data,
+                n_draws=n_draws,
+                n_chains=4,
+                n_warmup=max(50, n_draws // 2),
+                write_to_bq=True,
+                intervention_description=intervention_description,
+                analyst_notes=analyst_notes,
+            )
+        except ValueError as exc:
+            return {
+                "status": "insufficient_data",
+                "error": str(exc),
+                "n_pre": len(y_pre),
+                "n_post": len(y_post),
+                "fix": (
+                    "Extend pre_period_from to include more baseline days. "
+                    f"Need ≥ {len(y_post) * 4} pre-period observations for {len(y_post)} post days."
+                ),
+            }
+        except ImportError as exc:
+            return {
+                "status": "dependency_missing",
+                "error": str(exc),
+                "fix": "pip install 'paid-media-agent[causal]'",
+            }
+        except Exception as exc:
+            log.error("analyst.causal.pipeline_failed", error=str(exc))
+            return {
+                "status": "failed",
+                "error": str(exc),
+                "note": "Check Cloud Logging for the full traceback.",
+            }
+
+        log.info(
+            "analyst.causal.complete",
+            run_id=pipeline_result["run_id"],
+            channel=target_channel,
+            metric=target_metric,
+            cumulative_effect=pipeline_result["cumulative_effect"],
+            relative_pct=pipeline_result["relative_effect_pct"],
+            posterior_tail_prob=pipeline_result["posterior_tail_prob"],
+            is_significant=pipeline_result["is_significant"],
+        )
+
+        return {
+            "status":               "completed",
+            "run_id":               pipeline_result["run_id"],
+            "is_significant":       pipeline_result["is_significant"],
+            "cumulative_effect":    pipeline_result["cumulative_effect"],
+            "relative_effect_pct":  pipeline_result["relative_effect_pct"],
+            "posterior_tail_prob":  pipeline_result["posterior_tail_prob"],
+            "statistical_certainty_pct": round((1.0 - pipeline_result["posterior_tail_prob"]) * 100, 1),
+            "r_hat_max":            pipeline_result["r_hat_max"],
+            "elapsed_seconds":      pipeline_result["elapsed_seconds"],
+            "model_components":     pipeline_result["model_components"],
+            "bq_tables_written":    ["causal_impact_runs", "causal_impact_metrics"],
+            # Full series for downstream programmatic use
+            "series":               pipeline_result["series"],
+            # Markdown summary — surface this directly in agent response
+            "markdown_summary":     pipeline_result["markdown_summary"],
         }
 
     def _tool_complete_attribution_run(

@@ -57,5 +57,23 @@ mmm = [
     "pyarrow>=17.0.0",    # BigQuery → pandas transport (to_dataframe())
 ]
 
+# Causal Impact Analysis — Task 24
+# Bayesian Structural Time Series (BSTS) using the TFP-JAX substrate.
+# tensorflow-probability[jax] uses JAX/XLA directly — does NOT require TensorFlow Core.
+# Shares jax[cpu] with the [mmm] group; install both at once with:
+#   pip install 'paid-media-agent[mmm,causal]'
+#
+# Cloud Run requirements (set alongside MMM env vars if co-deployed):
+#   XLA_FLAGS = "--xla_force_host_platform_device_count=4"  (shared with MMM)
+#   JAX_PLATFORM_NAME = "cpu"
+#   Memory: 4 GB minimum for n_draws=200, T_pre<180
+#   Timeout: 600 seconds (HMC for BSTS is faster than full MMM)
+causal = [
+    "tensorflow-probability[jax]>=0.24.0",
+    "jax[cpu]>=0.4.30",
+    "numpy>=1.26.0",
+    "pandas>=2.2.0",
+]
+
 [tool.ruff.lint]
 select = ["E", "F", "I"]
