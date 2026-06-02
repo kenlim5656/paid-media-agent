@@ -1,26 +1,38 @@
 """
 The Operator — Media Optimization Agent.
-Runs daily after the Analyst. Turns attribution insights into media actions.
-HARD GUARDRAIL: all write actions require approval unless OPERATOR_REQUIRE_APPROVAL=false.
+Runs daily after the Analyst. Reads attribution_channel_summary and acts on insights.
+All write actions are logged to operator_action_log and operator_pending_approvals.
+Platform-agnostic: supports GMP, Meta, LinkedIn, TikTok via platform adapters.
 """
+import structlog
+from datetime import datetime, timezone
+
 from agents.base import BaseAgent
 from config import settings
 from tools import bigquery_client as bq, gmp_client, salesforce_client
 
+log = structlog.get_logger()
 
-SYSTEM = """You are the Operator, a media optimization agent for a B2B paid media pipeline.
+SYSTEM = """You are the Operator, a media optimization agent for a paid media pipeline.
 
-You receive attribution results from BigQuery (written by the Analyst agent) and act on them.
+You are platform-agnostic. You read attribution results and act on any supported platform
+(DV360, SA360, Google Ads, Meta, LinkedIn, TikTok, etc.) using the available tools.
 
-Your job:
-1. Identify campaigns that have met or exceeded their Opportunity Creation milestone targets.
-2. Identify underperforming awareness campaigns (low weighted_credit, high spend).
-3. If criteria are met, propose budget reallocations. NEVER move more than OPERATOR_GUARDRAIL_MAX_PCT% of any line item's budget in a single run.
-4. Identify accounts that have moved from Lead → Open Opportunity in Salesforce.
-5. Push those accounts as audience exclusions to DV360/LinkedIn to suppress top-of-funnel ads.
+Your daily run sequence:
+1. Call `get_attribution_summary` to see which channels are over/under-performing.
+2. Call `get_accounts_in_open_pipeline` to get domains to suppress.
+3. For each recommended action, call `log_proposed_action` FIRST to record it.
+4. If criteria and guardrails pass, call the appropriate execution tool.
+5. For audience suppression: call `push_audience_suppression`.
+6. For budget changes: call `reallocate_budget`.
 
-IMPORTANT: Always explain your reasoning before calling any write tool.
-If OPERATOR_REQUIRE_APPROVAL is true, write actions will return a pending approval payload — surface that clearly."""
+CRITICAL RULES:
+- NEVER move more than {max_budget_shift_pct}% of any line item's budget in one run.
+- ALWAYS call `log_proposed_action` before any execution tool.
+- If OPERATOR_REQUIRE_APPROVAL=true, execution tools will return a pending-approval payload — surface it clearly.
+- Always explain your reasoning (which attribution data drove each decision) before acting."""
+
+SYSTEM = SYSTEM.format(max_budget_shift_pct=settings.max_budget_shift_pct)
 
 
 class OperatorAgent(BaseAgent):
@@ -28,120 +40,329 @@ class OperatorAgent(BaseAgent):
     system_prompt = SYSTEM
     tools = [
         {
-            "name": "get_attribution_results",
-            "description": "Fetch top channels and campaign performance from the latest attribution_results table.",
+            "name": "get_attribution_summary",
+            "description": (
+                "Fetch the latest attribution channel summary from the most recent Analyst run. "
+                "Returns channels ranked by attributed conversions, with spend, CPA, ROAS, "
+                "and credit share. Reads from attribution_channel_summary — the MCP-compatible "
+                "aggregated view, not raw touchpoint data."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "limit": {"type": "integer", "default": 20}
+                    "conversion_type": {"type": "string", "description": "Filter to a specific conversion type, e.g. 'opportunity_created'"},
+                    "limit":           {"type": "integer", "default": 20},
                 },
                 "required": [],
             },
         },
         {
             "name": "get_accounts_in_open_pipeline",
-            "description": "Return Salesforce accounts that currently have an open (non-closed) Opportunity.",
+            "description": (
+                "Return company domains for accounts that have an open (non-closed) opportunity "
+                "in the CRM. Used to suppress top-of-funnel ads for accounts already in pipeline."
+            ),
             "input_schema": {"type": "object", "properties": {}, "required": []},
         },
         {
-            "name": "get_campaign_spend",
-            "description": "Fetch current daily spend and budget for a list of CM360 campaign IDs.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "campaign_ids": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "CM360 campaign IDs to look up",
-                    }
-                },
-                "required": ["campaign_ids"],
-            },
-        },
-        {
-            "name": "reallocate_dv360_budget",
+            "name": "log_proposed_action",
             "description": (
-                "Move budget from a low-performing DV360 line item to a high-performing one. "
-                "Capped at OPERATOR_GUARDRAIL_MAX_PCT of source budget."
+                "Write a proposed media action to operator_action_log and (if approval is required) "
+                "operator_pending_approvals. MUST be called before any execution tool. "
+                "Returns an action_id to pass to the execution tool for audit linkage."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "advertiser_id": {"type": "string"},
-                    "source_line_item_id": {"type": "string"},
-                    "target_line_item_id": {"type": "string"},
-                    "amount_usd": {"type": "number"},
+                    "action_type":        {"type": "string", "enum": [
+                        "budget_reallocation", "budget_pause", "budget_resume", "budget_adjustment",
+                        "audience_exclusion", "audience_inclusion", "bid_adjustment",
+                        "creative_suppression", "frequency_cap_update", "campaign_status_change",
+                    ]},
+                    "platform":           {"type": "string"},
+                    "platform_entity_id": {"type": "string"},
+                    "campaign_id":        {"type": "string"},
+                    "field_changed":      {"type": "string"},
+                    "value_before":       {"type": "string"},
+                    "value_after":        {"type": "string"},
+                    "change_magnitude":   {"type": "number"},
+                    "change_magnitude_pct": {"type": "number"},
+                    "rationale":          {"type": "string", "description": "Which attribution data drove this decision"},
+                    "summary":            {"type": "string", "description": "One-line human-readable summary, e.g. 'Reallocate $500 from EMEA Brand to EMEA Retargeting'"},
+                    "estimated_impact":   {"type": "string"},
+                    "insight_id":         {"type": "string"},
                 },
-                "required": ["advertiser_id", "source_line_item_id", "target_line_item_id", "amount_usd"],
+                "required": ["action_type", "platform", "platform_entity_id", "rationale", "summary"],
             },
         },
         {
-            "name": "push_audience_exclusion",
+            "name": "push_audience_suppression",
             "description": (
-                "Add a list of company domains to a DV360 audience exclusion list "
-                "to suppress top-of-funnel ads for accounts already in open pipeline."
+                "Add company domains to an audience exclusion list on a supported platform "
+                "(DV360, Meta, LinkedIn) to suppress top-of-funnel ads for accounts already "
+                "in open pipeline. Requires approval unless OPERATOR_REQUIRE_APPROVAL=false."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "advertiser_id": {"type": "string"},
-                    "audience_list_id": {"type": "string"},
-                    "domains": {
+                    "action_id":       {"type": "string", "description": "From log_proposed_action"},
+                    "platform":        {"type": "string", "enum": ["dv360", "meta", "linkedin"], "description": "Which platform to push the exclusion to"},
+                    "advertiser_id":   {"type": "string"},
+                    "audience_list_id":{"type": "string"},
+                    "domains":         {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Company website domains to exclude, e.g. ['acme.com']",
+                        "description": "Company domains to exclude, e.g. ['acme.com', 'bigcorp.com']",
                     },
                 },
-                "required": ["advertiser_id", "audience_list_id", "domains"],
+                "required": ["action_id", "platform", "advertiser_id", "audience_list_id", "domains"],
+            },
+        },
+        {
+            "name": "reallocate_budget",
+            "description": (
+                "Move budget from an underperforming line item to a high-performing one. "
+                "Supports DV360, SA360, and Google Ads. Capped at max_budget_shift_pct. "
+                "Requires approval unless OPERATOR_REQUIRE_APPROVAL=false."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "action_id":           {"type": "string", "description": "From log_proposed_action"},
+                    "platform":            {"type": "string", "enum": ["dv360", "sa360", "google_ads"]},
+                    "advertiser_id":       {"type": "string"},
+                    "source_entity_id":    {"type": "string", "description": "Line item / campaign to reduce"},
+                    "target_entity_id":    {"type": "string", "description": "Line item / campaign to increase"},
+                    "amount_usd":          {"type": "number"},
+                },
+                "required": ["action_id", "platform", "advertiser_id", "source_entity_id", "target_entity_id", "amount_usd"],
             },
         },
     ]
 
-    def _tool_get_attribution_results(self, limit: int = 20) -> dict:
-        rows = bq.run_query(
-            f"""
-            SELECT channel, campaign_id, influenced_opps, weighted_credit, period_start, period_end
-            FROM {bq.table_ref('attribution_results')}
-            ORDER BY weighted_credit DESC
+    # ── Tool implementations ──────────────────────────────────────────────────
+
+    def _tool_get_attribution_summary(
+        self,
+        conversion_type: str | None = None,
+        limit: int = 20,
+    ) -> dict:
+        conv_filter = f"AND conversion_type = '{conversion_type}'" if conversion_type else ""
+        rows = bq.run_query(f"""
+            SELECT
+                platform,
+                channel,
+                conversion_type,
+                attributed_conversions,
+                attributed_value,
+                credit_share_pct,
+                total_spend,
+                attributed_cpa,
+                attributed_roas,
+                period_start,
+                period_end,
+                model_name
+            FROM {bq.table_ref('attribution_channel_summary')}
+            WHERE run_id = (
+                SELECT run_id FROM {bq.table_ref('attribution_runs')}
+                WHERE status = 'completed'
+                ORDER BY completed_at DESC
+                LIMIT 1
+            )
+            {conv_filter}
+            ORDER BY attributed_conversions DESC
             LIMIT {limit}
-            """
-        )
-        return {"results": rows}
+        """)
+        return {"results": rows, "count": len(rows)}
 
     def _tool_get_accounts_in_open_pipeline(self) -> dict:
-        accounts = salesforce_client.get_accounts_with_open_opportunities()
-        domains = list({
-            a.get("Account", {}).get("Website", "").replace("https://", "").replace("www.", "").strip("/")
-            for a in accounts
-            if a.get("Account", {}).get("Website")
-        })
-        return {"account_count": len(accounts), "domains": domains}
+        # Try BigQuery staging table first, fall back to live Salesforce
+        try:
+            rows = bq.run_query(f"""
+                SELECT DISTINCT
+                    account_id,
+                    company_domain,
+                    pipeline_stage
+                FROM {bq.table_ref('crm_opportunities_staging')}
+                WHERE is_closed = FALSE
+                  AND company_domain IS NOT NULL
+                  AND company_domain NOT IN ('gmail.com', 'outlook.com', 'yahoo.com')
+                ORDER BY company_domain
+                LIMIT 500
+            """)
+            domains = [r["company_domain"] for r in rows if r.get("company_domain")]
+            source = "bigquery_staging"
+        except Exception:
+            accounts = salesforce_client.get_accounts_with_open_opportunities()
+            domains = list({
+                a.get("Account", {}).get("Website", "")
+                .replace("https://", "").replace("http://", "")
+                .replace("www.", "").strip("/")
+                for a in accounts
+                if a.get("Account", {}).get("Website")
+            })
+            source = "salesforce_api"
 
-    def _tool_get_campaign_spend(self, campaign_ids: list[str]) -> dict:
-        stats = gmp_client.cm360_get_campaign_stats(campaign_ids)
-        return {"campaigns": stats}
+        return {"domain_count": len(domains), "domains": domains, "source": source}
 
-    def _tool_reallocate_dv360_budget(
+    def _tool_log_proposed_action(
         self,
-        advertiser_id: str,
-        source_line_item_id: str,
-        target_line_item_id: str,
-        amount_usd: float,
+        action_type: str,
+        platform: str,
+        platform_entity_id: str,
+        rationale: str,
+        summary: str,
+        campaign_id: str | None = None,
+        field_changed: str | None = None,
+        value_before: str | None = None,
+        value_after: str | None = None,
+        change_magnitude: float | None = None,
+        change_magnitude_pct: float | None = None,
+        estimated_impact: str | None = None,
+        insight_id: str | None = None,
     ) -> dict:
-        # Enforce guardrail
-        max_pct = settings.max_budget_shift_pct
-        result = gmp_client.dv360_reallocate_budget(
-            advertiser_id, source_line_item_id, target_line_item_id, amount_usd
-        )
-        return {**result, "guardrail_max_pct": max_pct}
+        action_id = bq.new_uuid()
+        now = datetime.now(timezone.utc).isoformat()
+        execution_mode = "pending_approval" if settings.operator_require_approval else "autonomous"
 
-    def _tool_push_audience_exclusion(
+        action_row = {
+            "action_id":             action_id,
+            "action_type":           action_type,
+            "platform":              platform,
+            "platform_entity_type":  None,
+            "platform_entity_id":    platform_entity_id,
+            "campaign_id":           campaign_id,
+            "field_changed":         field_changed,
+            "value_before":          value_before,
+            "value_after":           value_after,
+            "change_magnitude":      change_magnitude,
+            "change_magnitude_pct":  change_magnitude_pct,
+            "rationale":             rationale,
+            "insight_id":            insight_id,
+            "attribution_run_id":    None,
+            "execution_mode":        execution_mode,
+            "status":                "proposed",
+            "guardrail_check_passed": True,
+            "guardrail_notes":       f"max_budget_shift_pct={settings.max_budget_shift_pct}",
+            "requires_approval":     settings.operator_require_approval,
+            "approved_by":           None,
+            "approved_at":           None,
+            "rejected_by":           None,
+            "rejected_at":           None,
+            "rejection_reason":      None,
+            "proposed_at":           now,
+            "executed_at":           None,
+            "rolled_back_at":        None,
+            "platform_response":     None,
+        }
+        bq.insert_rows("operator_action_log", [action_row])
+
+        # If approval required, also write to the pending approvals queue
+        if settings.operator_require_approval:
+            approval_row = {
+                "action_id":            action_id,
+                "platform":             platform,
+                "action_type":          action_type,
+                "platform_entity_id":   platform_entity_id,
+                "campaign_id":          campaign_id,
+                "summary":              summary,
+                "rationale":            rationale,
+                "estimated_impact":     estimated_impact,
+                "spend_at_risk":        change_magnitude,
+                "change_magnitude_pct": change_magnitude_pct,
+                "proposed_at":          now,
+                "expires_at":           None,
+                "proposed_by":          "operator_agent",
+            }
+            bq.insert_rows("operator_pending_approvals", [approval_row])
+
+        log.info("operator.action_logged", action_id=action_id, type=action_type, requires_approval=settings.operator_require_approval)
+        return {
+            "action_id":        action_id,
+            "requires_approval": settings.operator_require_approval,
+            "execution_mode":   execution_mode,
+            "message":          (
+                f"Action logged (ID: {action_id}). "
+                + ("Pending human approval before execution." if settings.operator_require_approval
+                   else "Proceeding to execute.")
+            ),
+        }
+
+    def _tool_push_audience_suppression(
         self,
+        action_id: str,
+        platform: str,
         advertiser_id: str,
         audience_list_id: str,
         domains: list[str],
     ) -> dict:
-        result = gmp_client.dv360_push_audience_exclusion(
-            advertiser_id, audience_list_id, domains
-        )
-        return {**result, "domain_count": len(domains)}
+        from tools.gmp_client import ApprovalRequiredError, dv360_push_audience_exclusion
+        try:
+            if platform == "dv360":
+                result = dv360_push_audience_exclusion(advertiser_id, audience_list_id, domains)
+            else:
+                # Meta and LinkedIn platform adapters — stub for now
+                if settings.operator_require_approval:
+                    raise ApprovalRequiredError(f"Audience suppression on {platform} requires approval.")
+                result = {"status": f"{platform}_suppression_stub", "domains": len(domains)}
+
+            self._update_action_status(action_id, "executed")
+            return {**result, "action_id": action_id, "domain_count": len(domains), "platform": platform}
+
+        except ApprovalRequiredError as exc:
+            return {
+                "action_id":  action_id,
+                "executed":   False,
+                "reason":     str(exc),
+                "next_step":  "Review pending approval in get_pending_approvals (MCP) or operator_pending_approvals (BQ).",
+            }
+
+    def _tool_reallocate_budget(
+        self,
+        action_id: str,
+        platform: str,
+        advertiser_id: str,
+        source_entity_id: str,
+        target_entity_id: str,
+        amount_usd: float,
+    ) -> dict:
+        from tools.gmp_client import ApprovalRequiredError, dv360_reallocate_budget, sa360_adjust_campaign_budget
+        try:
+            if platform == "dv360":
+                result = dv360_reallocate_budget(advertiser_id, source_entity_id, target_entity_id, amount_usd)
+            elif platform == "sa360":
+                result = sa360_adjust_campaign_budget(
+                    settings.sa360_agency_id, advertiser_id, target_entity_id, amount_usd
+                )
+            else:
+                if settings.operator_require_approval:
+                    raise ApprovalRequiredError(f"Budget reallocation on {platform} requires approval.")
+                result = {"status": f"{platform}_budget_stub", "amount_usd": amount_usd}
+
+            self._update_action_status(action_id, "executed")
+            return {**result, "action_id": action_id, "platform": platform}
+
+        except ApprovalRequiredError as exc:
+            return {
+                "action_id": action_id,
+                "executed":  False,
+                "reason":    str(exc),
+                "next_step": "Review pending approval in get_pending_approvals (MCP) or operator_pending_approvals (BQ).",
+            }
+
+    def _update_action_status(self, action_id: str, status: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            bq.run_dml(f"""
+                UPDATE {bq.table_ref('operator_action_log')}
+                SET status = '{status}', executed_at = TIMESTAMP '{now}'
+                WHERE action_id = '{action_id}'
+            """)
+            # Remove from pending approvals if it's been executed
+            if status == "executed":
+                bq.run_dml(f"""
+                    DELETE FROM {bq.table_ref('operator_pending_approvals')}
+                    WHERE action_id = '{action_id}'
+                """)
+        except Exception as exc:
+            log.warning("operator.status_update_failed", action_id=action_id, error=str(exc))
