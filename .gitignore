@@ -21,6 +21,11 @@ build/
 .ruff_cache/
 .pytest_cache/
 
+# Private skills — proprietary prompt files, never commit
+**/skills/private_*.md
+**/private_config/
+**/*_private.json
+
 # macOS
 .DS_Store
 

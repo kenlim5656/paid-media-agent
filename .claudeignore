@@ -1,0 +1,5 @@
+# Private skills — proprietary prompt/heuristic files
+# Claude Code must never read or surface these files
+**/skills/private_*.md
+**/private_config/
+**/*_private.json

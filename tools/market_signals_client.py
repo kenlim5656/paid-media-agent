@@ -75,7 +75,6 @@ import time
 import uuid
 from collections import Counter
 from datetime import date, datetime, timezone
-from pathlib import Path
 from typing import Any
 
 import structlog
@@ -83,18 +82,15 @@ import structlog
 import anthropic
 from config import settings
 from tools import bigquery_client as bq
+from tools.skill_resolver import SkillResolver
 from tools.social_listening_client import normalize_text  # Task 25 — direct import
+
+# ── Skill resolver singleton ──────────────────────────────────────────────────
+_skill_resolver = SkillResolver()
 
 log = structlog.get_logger()
 
 # ── Module-level constants ──────────────────────────────────────────────────────
-
-# Path resolution for the private skills file.
-# Resolved relative to this module's location: tools/ → project root → agents/analyst/skills/
-_PROJECT_ROOT = Path(__file__).parent.parent
-_PRIVATE_INTEL_PATH = (
-    _PROJECT_ROOT / "agents" / "analyst" / "skills" / "private_market_intelligence.md"
-)
 
 # HTTP fetch settings
 _FETCH_TIMEOUT_S       = 20        # per-URL HTTP timeout
@@ -121,97 +117,53 @@ _STOP_WORDS = frozenset({
 _RE_WORD_TOKENIZE = re.compile(r"\b[a-zA-Z][a-zA-Z0-9\-]{2,}\b")
 
 
-# ── Stealth Execution Gateway ─────────────────────────────────────────────────
+# ── Prompt resolution via SkillResolver ──────────────────────────────────────
+
+# Public fallback — fully functional for open-source deployments.
+# Extracts core competitive signals and produces a structured JSON profile.
+# For extended heuristics (proprietary scoring, market-specific terminology,
+# counter-positioning playbook), place private_market_intelligence.md at:
+#   agents/analyst/skills/private_market_intelligence.md
+# That file is gitignored and loaded automatically when present.
+_PUBLIC_FALLBACK_PROMPT = """
+You are a competitive intelligence analyst. Analyze the competitor's marketing content
+and extract a structured profile. Output ONLY valid JSON — no preamble, no markdown
+fences, no explanation. Start with '{' and end with '}'.
+
+Required fields:
+{
+  "core_value_prop": "<one sentence>",
+  "observed_positioning_angle": "<price_leadership | quality_premium | speed_efficiency | ease_simplicity | category_creation | vertical_specialist | trust_security | mixed>",
+  "inferred_target_audience": "<buyer persona description>",
+  "sentiment_tone": "<authoritative | conversational | aggressive | aspirational | technical | friendly | neutral>",
+  "primary_keywords_detected": ["<top 15 strategic terms, no stop words>"],
+  "key_themes": [
+    {"theme": "<name>", "frequency": <int>, "example_phrase": "<verbatim quote>"}
+  ],
+  "messaging_pillars": [
+    {"pillar": "<name>", "supporting_claims": ["<claim>"]}
+  ],
+  "cta_patterns": ["<CTA phrase>"],
+  "counter_positioning_hooks": [
+    {"angle": "<angle>", "hook": "<ad hook>", "rationale": "<why this gaps their positioning>"}
+  ],
+  "confidence_score": <0.0–1.0>
+}
+
+Rules: extract only what is demonstrably present; use null for fields with insufficient data.
+""".strip()
+
 
 def _resolve_evaluation_prompt() -> tuple[str, str]:
     """
-    Locate and return the evaluation prompt for Claude inference.
+    Delegate prompt resolution to SkillResolver.
 
-    Stealth Execution Gateway logic:
-      1. Check for private_market_intelligence.md at the canonical path.
-         If present, read its contents and use as the master evaluation prompt.
-         The private file may contain proprietary heuristics, custom scoring
-         criteria, market-specific terminology, or competitive playbook logic.
-      2. If absent (first run, CI environment, or public deployment):
-         Return the public fallback — a standard semantic summarization prompt
-         that extracts core themes and keyword frequencies without proprietary logic.
-
-    The private file is never persisted, logged, or transmitted — it exists
-    only as text in memory during the inference call stack frame.
-
-    Returns:
-        (prompt_text, source) where source is "private" or "public_fallback".
+    Returns (prompt_text, source) where source is "private" or "public_fallback".
     """
-    if _PRIVATE_INTEL_PATH.exists():
-        try:
-            private_content = _PRIVATE_INTEL_PATH.read_text(encoding="utf-8").strip()
-            if private_content:
-                log.info(
-                    "market_signals.prompt.private_loaded",
-                    path=str(_PRIVATE_INTEL_PATH),
-                    chars=len(private_content),
-                )
-                return private_content, "private"
-        except OSError as exc:
-            log.warning(
-                "market_signals.prompt.private_read_failed",
-                path=str(_PRIVATE_INTEL_PATH),
-                error=str(exc),
-                fallback="public_fallback",
-            )
-
-    log.info("market_signals.prompt.using_public_fallback")
-    return _PUBLIC_FALLBACK_PROMPT, "public_fallback"
-
-
-_PUBLIC_FALLBACK_PROMPT = """
-You are a competitive intelligence analyst. Analyze the competitor's marketing content
-and extract a structured strategic profile. Output ONLY a valid JSON object — no
-preamble, no markdown fences, no explanation. Start with '{' and end with '}'.
-
-Focus on:
-1. The primary value proposition (what they claim to do and for whom)
-2. Positioning angle (price/quality/speed/simplicity/category creation/trust)
-3. Target audience (job title, company type, company size if discernible)
-4. Primary keywords and strategic terminology (B2B-specific language, product nouns)
-5. Recurring narrative themes and messaging pillars
-6. Call-to-action patterns
-7. Overall messaging tone
-8. Counter-positioning opportunities (where does their positioning leave gaps
-   that a competitor could exploit with differentiated messaging?)
-
-Output schema:
-{
-  "core_value_prop": "<one sentence>",
-  "observed_positioning_angle": "<one of: price_leadership | quality_premium | speed_efficiency | ease_simplicity | category_creation | vertical_specialist | trust_security | mixed>",
-  "inferred_target_audience": "<description of primary buyer persona>",
-  "sentiment_tone": "<one of: authoritative | conversational | aggressive | aspirational | technical | friendly | neutral>",
-  "primary_keywords_detected": ["<keyword>", ...],
-  "key_themes": [
-    {"theme": "<theme name>", "frequency": <int>, "example_phrase": "<verbatim or near-verbatim from source>"},
-    ...
-  ],
-  "messaging_pillars": [
-    {"pillar": "<pillar name>", "supporting_claims": ["<claim>", ...]},
-    ...
-  ],
-  "cta_patterns": ["<CTA phrase>", ...],
-  "counter_positioning_hooks": [
-    {"angle": "<differentiation angle>", "hook": "<suggested ad hook>", "rationale": "<why this gaps their positioning>"},
-    ...
-  ],
-  "confidence_score": <float 0.0–1.0 reflecting content richness — 1.0 = very rich data>
-}
-
-Rules:
-- primary_keywords_detected: list the top 15 strategic terms (exclude stop words and filler)
-- key_themes: identify the top 5 recurring narrative themes
-- messaging_pillars: identify the top 3 core value claims the competitor repeats
-- cta_patterns: list all distinct CTA phrases observed
-- counter_positioning_hooks: provide 3 concrete counter-positioning suggestions
-- Do not fabricate — only extract what is demonstrably present in the source text
-- If the content is too thin to complete a field reliably, use null for that field
-""".strip()
+    return _skill_resolver.resolve_skill_prompt(
+        public_fallback_string=_PUBLIC_FALLBACK_PROMPT,
+        private_filename="market_intelligence",
+    )
 
 
 # ── Keyword frequency helper ─────────────────────────────────────────────────
@@ -233,35 +185,6 @@ def _extract_top_keywords(text: str, top_n: int = 20) -> list[dict]:
         for kw, cnt in counter.most_common(top_n)
     ]
 
-
-# ── Git safeguard for private skills file ────────────────────────────────────
-
-def _ensure_private_intel_gitignore() -> None:
-    """
-    Programmatically ensure private_market_intelligence.md is listed in
-    .gitignore and .claudeignore so it can never be accidentally committed.
-    Called once at module import — idempotent.
-    """
-    filename = "private_market_intelligence.md"
-    for ignore_file in [".gitignore", ".claudeignore"]:
-        ignore_path = _PROJECT_ROOT / ignore_file
-        if not ignore_path.exists():
-            continue
-        content = ignore_path.read_text()
-        if filename not in content:
-            with ignore_path.open("a") as f:
-                f.write(
-                    f"\n# Private competitive intelligence instructions — never commit\n"
-                    f"*/{filename}\n"
-                )
-            log.info("market_signals.gitignore.updated", file=ignore_file, entry=filename)
-
-
-# Run once at import to enforce safeguard
-try:
-    _ensure_private_intel_gitignore()
-except Exception:
-    pass  # Non-fatal — best-effort git safeguard
 
 
 # ── Main client class ─────────────────────────────────────────────────────────
