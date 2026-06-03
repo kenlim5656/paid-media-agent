@@ -130,6 +130,13 @@ _TABLES: dict[str, str] = {
     "market_signals_staging":        "market_signals_staging",
     "competitor_messaging_vectors":  "competitor_messaging_vectors",
 
+    # ── Unified reporting layer — views (17_unified_reporting.sql) ───────────────
+    # Blend and normalize metrics across all 4 active channels + CRM pipeline.
+    "v_unified_daily_spend":          "v_unified_daily_spend",
+    "v_unified_spatial_performance":  "v_unified_spatial_performance",
+    "v_reporting_campaign_roi":       "v_reporting_campaign_roi",
+    "v_reporting_monthly_pacing":     "v_reporting_monthly_pacing",
+
     # ── Attribution forensics layer — table + view (16_attribution_forensics.sql) ─
     # Written by tools/attribution_verifier.py AttributionVerifier.run_audit().
     "data_attribution_anomalies":        "data_attribution_anomalies",
