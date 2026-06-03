@@ -1,0 +1,210 @@
+{
+  "_meta": {
+    "version": "1.0.0",
+    "description": "JSON-file schema for the paid media suite simple mode. Used when BigQuery is not available. Each key is a filename under data/. The MCP file-adapter reads these. The autonomous agent writes to these in simple mode.",
+    "note": "Simple mode is suitable for teams with <50 campaigns and no warehouse. For production attribution modeling, BigQuery mode is strongly recommended."
+  },
+
+  "files": {
+
+    "identity_signals.json": {
+      "description": "Array of raw identity signals captured. Equivalent to BQ identity_signals table.",
+      "type": "array",
+      "item_schema": {
+        "signal_id":        "string (uuid)",
+        "session_id":       "string | null",
+        "namespace_id":     "string (from identity_namespaces.json)",
+        "identifier_value": "string",
+        "captured_at":      "ISO 8601 datetime",
+        "capture_source":   "string",
+        "confidence_score": "number 0.0-1.0 | null",
+        "is_deterministic": "boolean | null",
+        "expires_at":       "ISO 8601 datetime | null",
+        "context":          "object | null"
+      }
+    },
+
+    "identity_graph.json": {
+      "description": "Simplified identity graph for file mode. Merges identity_entities and identity_entity_signals into one structure.",
+      "type": "array",
+      "item_schema": {
+        "entity_id":         "string (uuid, stable)",
+        "entity_type":       "'person' | 'account'",
+        "company_domain":    "string | null",
+        "company_name":      "string | null",
+        "confidence_tier":   "'high' | 'medium' | 'low'",
+        "first_seen_at":     "ISO 8601 datetime",
+        "last_seen_at":      "ISO 8601 datetime",
+        "signals": [
+          {
+            "namespace_id":      "string",
+            "identifier_value":  "string",
+            "match_method":      "'deterministic' | 'probabilistic' | 'declarative'",
+            "confidence_score":  "number 0.0-1.0",
+            "first_observed_at": "ISO 8601 datetime",
+            "last_observed_at":  "ISO 8601 datetime"
+          }
+        ]
+      }
+    },
+
+    "sessions.json": {
+      "description": "Session records. Equivalent to BQ sessions table.",
+      "type": "array",
+      "item_schema": {
+        "session_id":       "string",
+        "session_source":   "string",
+        "entity_id":        "string | null",
+        "session_start_at": "ISO 8601 datetime",
+        "channel_grouping": "string | null",
+        "entry_url":        "string | null",
+        "click_ids": {
+          "_comment": "Include only the click IDs that were present in this session",
+          "gclid":    "string | null",
+          "dclid":    "string | null",
+          "fbclid":   "string | null",
+          "li_fat_id":"string | null",
+          "ttclid":   "string | null",
+          "msclkid":  "string | null"
+        },
+        "analytics_ids": {
+          "ga4_client_id":      "string | null",
+          "ecid":               "string | null",
+          "segment_anonymous_id": "string | null"
+        },
+        "utm": {
+          "source":   "string | null",
+          "medium":   "string | null",
+          "campaign": "string | null",
+          "content":  "string | null",
+          "term":     "string | null"
+        }
+      }
+    },
+
+    "touchpoint_events.json": {
+      "description": "Marketing touchpoints. Equivalent to BQ touchpoint_events table.",
+      "type": "array",
+      "item_schema": {
+        "touchpoint_id":    "string (uuid)",
+        "entity_id":        "string | null",
+        "session_id":       "string | null",
+        "touchpoint_at":    "ISO 8601 datetime",
+        "touchpoint_type":  "'click' | 'impression' | 'video_view' | 'engagement'",
+        "platform":         "string",
+        "channel":          "string",
+        "campaign_id":      "string | null",
+        "ad_group_id":      "string | null",
+        "ad_id":            "string | null",
+        "funnel_stage":     "'awareness' | 'consideration' | 'intent' | 'conversion' | null",
+        "path_position":    "integer | null",
+        "path_total_touches": "integer | null"
+      }
+    },
+
+    "conversion_events.json": {
+      "description": "Conversion events. Equivalent to BQ conversion_events table.",
+      "type": "array",
+      "item_schema": {
+        "conversion_id":    "string (uuid or transaction_id)",
+        "entity_id":        "string",
+        "session_id":       "string | null",
+        "converted_at":     "ISO 8601 datetime",
+        "conversion_type":  "string",
+        "conversion_name":  "string | null",
+        "conversion_value": "number | null",
+        "currency":         "string (ISO 4217, default 'USD')",
+        "is_primary":       "boolean",
+        "transaction_id":   "string | null",
+        "crm_opportunity_id": "string | null",
+        "crm_account_id":   "string | null",
+        "deal_value":       "number | null"
+      }
+    },
+
+    "platform_campaigns.json": {
+      "description": "Campaign metadata. Equivalent to BQ platform_campaigns table.",
+      "type": "array",
+      "item_schema": {
+        "campaign_id":           "string (internal uuid)",
+        "platform":              "string",
+        "platform_campaign_id":  "string",
+        "campaign_name":         "string",
+        "objective":             "string | null",
+        "channel":               "string | null",
+        "budget_amount":         "number | null",
+        "budget_type":           "'daily' | 'lifetime' | 'monthly' | null",
+        "start_date":            "YYYY-MM-DD | null",
+        "end_date":              "YYYY-MM-DD | null",
+        "status":                "'active' | 'paused' | 'ended' | 'draft' | 'archived'",
+        "team_id":               "string | null",
+        "platform_data":         "object | null"
+      }
+    },
+
+    "attribution_results.json": {
+      "description": "Simplified attribution results for file mode. Pre-aggregated at channel level (full touchpoint-level results require BQ).",
+      "type": "object",
+      "schema": {
+        "run_id":       "string",
+        "model_name":   "string",
+        "period_start": "YYYY-MM-DD",
+        "period_end":   "YYYY-MM-DD",
+        "generated_at": "ISO 8601 datetime",
+        "channel_summary": [
+          {
+            "platform":               "string",
+            "channel":                "string",
+            "conversion_type":        "string",
+            "attributed_conversions": "number",
+            "attributed_value":       "number | null",
+            "credit_share_pct":       "number",
+            "total_spend":            "number | null",
+            "attributed_cpa":         "number | null",
+            "attributed_roas":        "number | null"
+          }
+        ]
+      }
+    },
+
+    "watchdog_alerts.json": {
+      "description": "Active data quality alerts. Equivalent to BQ watchdog_alerts (open/warning status only).",
+      "type": "array",
+      "item_schema": {
+        "alert_id":          "string",
+        "alert_type":        "string",
+        "severity":          "'info' | 'warning' | 'critical'",
+        "status":            "'open' | 'acknowledged' | 'resolved'",
+        "namespace_id":      "string | null",
+        "affected_platform": "string | null",
+        "metric_name":       "string | null",
+        "metric_value":      "number | null",
+        "threshold_value":   "number | null",
+        "description":       "string",
+        "probable_cause":    "string | null",
+        "recommended_action": "string | null",
+        "detected_at":       "ISO 8601 datetime"
+      }
+    },
+
+    "operator_pending_approvals.json": {
+      "description": "Media actions awaiting human approval. Surfaced by the MCP to skill sessions.",
+      "type": "array",
+      "item_schema": {
+        "action_id":           "string",
+        "platform":            "string",
+        "action_type":         "string",
+        "platform_entity_id":  "string",
+        "campaign_id":         "string | null",
+        "summary":             "string",
+        "rationale":           "string",
+        "estimated_impact":    "string | null",
+        "spend_at_risk":       "number | null",
+        "change_magnitude_pct": "number | null",
+        "proposed_at":         "ISO 8601 datetime",
+        "expires_at":          "ISO 8601 datetime | null"
+      }
+    }
+
+  }
+}

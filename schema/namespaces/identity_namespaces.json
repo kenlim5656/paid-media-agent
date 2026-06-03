@@ -1,0 +1,662 @@
+{
+  "_meta": {
+    "version": "1.0.0",
+    "description": "Registry of all known identity signal types. Every identifier captured anywhere in the stack must be registered here. Namespaces follow the pattern: {category}.{vendor}.{signal_name}",
+    "categories": {
+      "platform_click_id":    "Deterministic click IDs appended to URLs by ad platforms",
+      "platform_cookie":      "Browser-side cookies set by ad platform pixels",
+      "platform_user_id":     "User-scoped IDs from ad platforms (logged-in matching)",
+      "analytics_cookie":     "Browser-side cookies set by analytics platforms",
+      "analytics_user_id":    "User IDs set by the org inside an analytics platform",
+      "analytics_session_id": "Session-scoped identifiers from analytics platforms",
+      "crm_id":               "IDs from CRM or marketing automation platforms",
+      "first_party_hashed":   "PII hashed by the org before storage (SHA-256 unless noted)",
+      "first_party_raw":      "Non-PII first-party identifiers (internal customer/user IDs)",
+      "device_id":            "Device-level identifiers (mobile OS, fingerprint-derived)",
+      "network":              "Network-level signals (IP address, ASN)",
+      "cohort":               "Privacy-preserving cohort or aggregated signals",
+      "custom":               "Org-defined identifiers not covered by other categories"
+    }
+  },
+
+  "namespaces": [
+
+    // ── PLATFORM CLICK IDs ──────────────────────────────────────────────────
+
+    {
+      "namespace_id":    "platform_click_id.google.gclid",
+      "display_name":    "Google Click ID (gclid)",
+      "category":        "platform_click_id",
+      "vendor":          "google",
+      "signal_name":     "gclid",
+      "url_parameter":   "gclid",
+      "platforms":       ["google_ads", "sa360"],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   90,
+      "capture_method":  "url_parameter",
+      "notes":           "Appended to landing page URLs by Google Ads/SA360 auto-tagging. Primary signal for Google search and shopping attribution. Survives redirects."
+    },
+    {
+      "namespace_id":    "platform_click_id.google.dclid",
+      "display_name":    "Display Click ID (dclid)",
+      "category":        "platform_click_id",
+      "vendor":          "google",
+      "signal_name":     "dclid",
+      "url_parameter":   "dclid",
+      "platforms":       ["dv360", "cm360"],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   90,
+      "capture_method":  "url_parameter",
+      "notes":           "Set by DV360/CM360 for display and video clicks. Distinct from gclid. Both can be present if a search + display path is stitched."
+    },
+    {
+      "namespace_id":    "platform_click_id.google.wbraid",
+      "display_name":    "Google wbraid (iOS web-to-app)",
+      "category":        "platform_click_id",
+      "vendor":          "google",
+      "signal_name":     "wbraid",
+      "url_parameter":   "wbraid",
+      "platforms":       ["google_ads"],
+      "deterministic":   false,
+      "pii":             false,
+      "lifetime_days":   30,
+      "capture_method":  "url_parameter",
+      "notes":           "Privacy-safe click signal for iOS web-to-app conversions. Not 1:1 to a user — aggregated via Private Click Measurement. Do not use for individual-level stitching."
+    },
+    {
+      "namespace_id":    "platform_click_id.google.gbraid",
+      "display_name":    "Google gbraid (iOS app-to-web)",
+      "category":        "platform_click_id",
+      "vendor":          "google",
+      "signal_name":     "gbraid",
+      "url_parameter":   "gbraid",
+      "platforms":       ["google_ads"],
+      "deterministic":   false,
+      "pii":             false,
+      "lifetime_days":   30,
+      "capture_method":  "url_parameter",
+      "notes":           "Privacy-safe signal for iOS app-to-web. Same aggregated-only constraint as wbraid."
+    },
+    {
+      "namespace_id":    "platform_click_id.microsoft.msclkid",
+      "display_name":    "Microsoft Click ID (msclkid)",
+      "category":        "platform_click_id",
+      "vendor":          "microsoft",
+      "signal_name":     "msclkid",
+      "url_parameter":   "msclkid",
+      "platforms":       ["microsoft_ads"],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   90,
+      "capture_method":  "url_parameter",
+      "notes":           "Microsoft Ads auto-tagging equivalent of gclid."
+    },
+    {
+      "namespace_id":    "platform_click_id.meta.fbclid",
+      "display_name":    "Facebook Click ID (fbclid)",
+      "category":        "platform_click_id",
+      "vendor":          "meta",
+      "signal_name":     "fbclid",
+      "url_parameter":   "fbclid",
+      "platforms":       ["meta"],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   7,
+      "capture_method":  "url_parameter",
+      "notes":           "Appended by Meta to ad destination URLs. Short-lived (7 days). Should be captured server-side and stored as _fbc format for CAPI. Blocked by Safari ITP after 24h in some configurations."
+    },
+    {
+      "namespace_id":    "platform_click_id.linkedin.li_fat_id",
+      "display_name":    "LinkedIn First-Party Ad Tracking ID",
+      "category":        "platform_click_id",
+      "vendor":          "linkedin",
+      "signal_name":     "li_fat_id",
+      "url_parameter":   "li_fat_id",
+      "platforms":       ["linkedin"],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   30,
+      "capture_method":  "url_parameter",
+      "notes":           "LinkedIn's first-party click ID for Conversions API matching. Required for server-side event deduplication on LinkedIn."
+    },
+    {
+      "namespace_id":    "platform_click_id.tiktok.ttclid",
+      "display_name":    "TikTok Click ID (ttclid)",
+      "category":        "platform_click_id",
+      "vendor":          "tiktok",
+      "signal_name":     "ttclid",
+      "url_parameter":   "ttclid",
+      "platforms":       ["tiktok"],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   7,
+      "capture_method":  "url_parameter",
+      "notes":           "TikTok Events API matching signal. Similar constraints to fbclid — capture server-side immediately on landing."
+    },
+    {
+      "namespace_id":    "platform_click_id.snapchat.sccid",
+      "display_name":    "Snapchat Click ID (ScCid)",
+      "category":        "platform_click_id",
+      "vendor":          "snapchat",
+      "signal_name":     "ScCid",
+      "url_parameter":   "ScCid",
+      "platforms":       ["snapchat"],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   28,
+      "capture_method":  "url_parameter",
+      "notes":           "Snap Conversions API click ID."
+    },
+    {
+      "namespace_id":    "platform_click_id.pinterest.epik",
+      "display_name":    "Pinterest Click ID (epik)",
+      "category":        "platform_click_id",
+      "vendor":          "pinterest",
+      "signal_name":     "epik",
+      "url_parameter":   "epik",
+      "platforms":       ["pinterest"],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   180,
+      "capture_method":  "url_parameter",
+      "notes":           "Pinterest Conversions API click signal."
+    },
+    {
+      "namespace_id":    "platform_click_id.twitter.twclid",
+      "display_name":    "X/Twitter Click ID (twclid)",
+      "category":        "platform_click_id",
+      "vendor":          "twitter",
+      "signal_name":     "twclid",
+      "url_parameter":   "twclid",
+      "platforms":       ["twitter_x"],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   7,
+      "capture_method":  "url_parameter",
+      "notes":           "X Ads Manager click ID for Conversions API."
+    },
+    {
+      "namespace_id":    "platform_click_id.amazon.amzn_clid",
+      "display_name":    "Amazon Click ID",
+      "category":        "platform_click_id",
+      "vendor":          "amazon",
+      "signal_name":     "amzn_clid",
+      "url_parameter":   "amzn_clid",
+      "platforms":       ["amazon_ads"],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   30,
+      "capture_method":  "url_parameter",
+      "notes":           "Amazon DSP / Sponsored Ads click tracking ID."
+    },
+
+    // ── PLATFORM COOKIES ────────────────────────────────────────────────────
+
+    {
+      "namespace_id":    "platform_cookie.meta.fbc",
+      "display_name":    "Meta Click Cookie (_fbc)",
+      "category":        "platform_cookie",
+      "vendor":          "meta",
+      "signal_name":     "_fbc",
+      "cookie_name":     "_fbc",
+      "platforms":       ["meta"],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   90,
+      "capture_method":  "browser_cookie",
+      "notes":           "Derived from fbclid, stored as a first-party cookie by the Meta pixel. Format: fb.1.{timestamp}.{fbclid}. Pass to CAPI as click_id. More durable than fbclid URL param."
+    },
+    {
+      "namespace_id":    "platform_cookie.meta.fbp",
+      "display_name":    "Meta Browser Cookie (_fbp)",
+      "category":        "platform_cookie",
+      "vendor":          "meta",
+      "signal_name":     "_fbp",
+      "cookie_name":     "_fbp",
+      "platforms":       ["meta"],
+      "deterministic":   false,
+      "pii":             false,
+      "lifetime_days":   90,
+      "capture_method":  "browser_cookie",
+      "notes":           "Meta browser ID set by the pixel (not tied to a specific click). Used for browser-level deduplication. Lower confidence than _fbc."
+    },
+    {
+      "namespace_id":    "platform_cookie.linkedin.li_sugr",
+      "display_name":    "LinkedIn Insight Tag Cookie (li_sugr)",
+      "category":        "platform_cookie",
+      "vendor":          "linkedin",
+      "signal_name":     "li_sugr",
+      "cookie_name":     "li_sugr",
+      "platforms":       ["linkedin"],
+      "deterministic":   false,
+      "pii":             false,
+      "lifetime_days":   90,
+      "capture_method":  "browser_cookie",
+      "notes":           "LinkedIn browser-level identifier from the Insight Tag."
+    },
+
+    // ── ANALYTICS COOKIES ───────────────────────────────────────────────────
+
+    {
+      "namespace_id":    "analytics_cookie.google.ga4_client_id",
+      "display_name":    "GA4 Client ID (_ga cookie)",
+      "category":        "analytics_cookie",
+      "vendor":          "google",
+      "signal_name":     "ga4_client_id",
+      "cookie_name":     "_ga",
+      "platforms":       ["ga4"],
+      "deterministic":   false,
+      "pii":             false,
+      "lifetime_days":   395,
+      "capture_method":  "browser_cookie",
+      "notes":           "Browser-level identifier set by GA4. Format: GA1.1.{random}.{timestamp}. The numeric portion after the second dot is the client_id used in GA4 events. Not 1:1 to a person — can be shared on family/work devices. Primary stitching signal for GA4 → GMP attribution."
+    },
+    {
+      "namespace_id":    "analytics_cookie.google.ga4_session_id",
+      "display_name":    "GA4 Session ID",
+      "category":        "analytics_session_id",
+      "vendor":          "google",
+      "signal_name":     "ga4_session_id",
+      "cookie_name":     "_ga_XXXXXXXXXX",
+      "platforms":       ["ga4"],
+      "deterministic":   false,
+      "pii":             false,
+      "lifetime_days":   null,
+      "capture_method":  "browser_cookie",
+      "notes":           "Session-scoped GA4 identifier. Resets on session expiry (30min inactivity or midnight). Use for within-session attribution; do not use for cross-session stitching."
+    },
+    {
+      "namespace_id":    "analytics_cookie.adobe.ecid",
+      "display_name":    "Adobe Experience Cloud ID (ECID / MCID)",
+      "category":        "analytics_cookie",
+      "vendor":          "adobe",
+      "signal_name":     "ecid",
+      "cookie_name":     "AMCV_*",
+      "platforms":       ["adobe_analytics", "adobe_experience_platform"],
+      "deterministic":   false,
+      "pii":             false,
+      "lifetime_days":   395,
+      "capture_method":  "browser_cookie",
+      "notes":           "Adobe's universal browser-level ID. Equivalent role to GA4 client_id in the Adobe stack. Also called MCID (Marketing Cloud Visitor ID). Present if the org uses Adobe Analytics or AEP."
+    },
+    {
+      "namespace_id":    "analytics_cookie.segment.anonymous_id",
+      "display_name":    "Segment Anonymous ID",
+      "category":        "analytics_cookie",
+      "vendor":          "segment",
+      "signal_name":     "anonymous_id",
+      "cookie_name":     "ajs_anonymous_id",
+      "platforms":       ["segment"],
+      "deterministic":   false,
+      "pii":             false,
+      "lifetime_days":   365,
+      "capture_method":  "browser_cookie",
+      "notes":           "Segment's pre-identification browser ID. Becomes associated with a user_id on identify() call. Key stitching point if the org uses Segment as their CDP."
+    },
+
+    // ── ANALYTICS USER IDs ──────────────────────────────────────────────────
+
+    {
+      "namespace_id":    "analytics_user_id.google.ga4_user_id",
+      "display_name":    "GA4 User ID (org-set)",
+      "category":        "analytics_user_id",
+      "vendor":          "google",
+      "signal_name":     "ga4_user_id",
+      "platforms":       ["ga4"],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   null,
+      "capture_method":  "analytics_sdk",
+      "notes":           "Set by the org via gtag('config', ..., {user_id: '...'}) or via GTM. Should be a non-PII internal user ID, not an email. Highest-confidence GA4 signal — enables cross-device attribution."
+    },
+    {
+      "namespace_id":    "analytics_user_id.adobe.aid",
+      "display_name":    "Adobe Analytics Visitor ID (s_vi)",
+      "category":        "analytics_user_id",
+      "vendor":          "adobe",
+      "signal_name":     "aid",
+      "cookie_name":     "s_vi",
+      "platforms":       ["adobe_analytics"],
+      "deterministic":   false,
+      "pii":             false,
+      "lifetime_days":   730,
+      "capture_method":  "browser_cookie",
+      "notes":           "Adobe Analytics legacy visitor ID. Predates ECID. May coexist with ECID in older implementations."
+    },
+    {
+      "namespace_id":    "analytics_user_id.segment.user_id",
+      "display_name":    "Segment User ID (post-identify)",
+      "category":        "analytics_user_id",
+      "vendor":          "segment",
+      "signal_name":     "segment_user_id",
+      "platforms":       ["segment"],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   null,
+      "capture_method":  "analytics_sdk",
+      "notes":           "Set on identify() call. Should match the org's internal user ID. High-confidence stitching signal — bridges anonymous_id to authenticated identity."
+    },
+    {
+      "namespace_id":    "analytics_user_id.mixpanel.distinct_id",
+      "display_name":    "Mixpanel Distinct ID",
+      "category":        "analytics_user_id",
+      "vendor":          "mixpanel",
+      "signal_name":     "distinct_id",
+      "platforms":       ["mixpanel"],
+      "deterministic":   false,
+      "pii":             false,
+      "lifetime_days":   null,
+      "capture_method":  "analytics_sdk",
+      "notes":           "Mixpanel's primary identifier. Anonymous pre-login, org-set post-login. Mixpanel's identity merge API links anonymous → identified."
+    },
+    {
+      "namespace_id":    "analytics_user_id.amplitude.device_id",
+      "display_name":    "Amplitude Device ID",
+      "category":        "analytics_user_id",
+      "vendor":          "amplitude",
+      "signal_name":     "amplitude_device_id",
+      "platforms":       ["amplitude"],
+      "deterministic":   false,
+      "pii":             false,
+      "lifetime_days":   null,
+      "capture_method":  "analytics_sdk",
+      "notes":           "Amplitude's device-level identifier. Distinct from user_id — persists across sessions on the same device."
+    },
+
+    // ── CRM IDs ─────────────────────────────────────────────────────────────
+
+    {
+      "namespace_id":    "crm_id.salesforce.contact_id",
+      "display_name":    "Salesforce Contact ID",
+      "category":        "crm_id",
+      "vendor":          "salesforce",
+      "signal_name":     "sf_contact_id",
+      "platforms":       ["salesforce"],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   null,
+      "capture_method":  "crm_api",
+      "notes":           "18-character Salesforce Contact record ID. Deterministic — one contact, one ID. Primary CRM stitching signal for B2C. Use Account ID for B2B account-level attribution."
+    },
+    {
+      "namespace_id":    "crm_id.salesforce.account_id",
+      "display_name":    "Salesforce Account ID",
+      "category":        "crm_id",
+      "vendor":          "salesforce",
+      "signal_name":     "sf_account_id",
+      "platforms":       ["salesforce"],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   null,
+      "capture_method":  "crm_api",
+      "notes":           "18-character Salesforce Account record ID. Primary B2B stitching anchor — multiple contacts and anonymous sessions roll up to one Account."
+    },
+    {
+      "namespace_id":    "crm_id.salesforce.lead_id",
+      "display_name":    "Salesforce Lead ID",
+      "category":        "crm_id",
+      "vendor":          "salesforce",
+      "signal_name":     "sf_lead_id",
+      "platforms":       ["salesforce"],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   null,
+      "capture_method":  "crm_api",
+      "notes":           "Pre-conversion Salesforce Lead record ID. On conversion, Lead is merged to Contact + Account. Map Lead ID → Contact ID in the identity graph on merge."
+    },
+    {
+      "namespace_id":    "crm_id.hubspot.contact_id",
+      "display_name":    "HubSpot Contact ID",
+      "category":        "crm_id",
+      "vendor":          "hubspot",
+      "signal_name":     "hs_contact_id",
+      "platforms":       ["hubspot"],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   null,
+      "capture_method":  "crm_api",
+      "notes":           "HubSpot contact record ID. HubSpot also sets a __hstc browser cookie that bridges anonymous visits to the contact record."
+    },
+    {
+      "namespace_id":    "crm_id.hubspot.browser_cookie",
+      "display_name":    "HubSpot Browser Cookie (__hstc)",
+      "category":        "platform_cookie",
+      "vendor":          "hubspot",
+      "signal_name":     "hubspot_cookie",
+      "cookie_name":     "__hstc",
+      "platforms":       ["hubspot"],
+      "deterministic":   false,
+      "pii":             false,
+      "lifetime_days":   180,
+      "capture_method":  "browser_cookie",
+      "notes":           "HubSpot's anonymous visitor cookie. Links to a contact record after form submission. Key stitching bridge for HubSpot-tracked sites."
+    },
+    {
+      "namespace_id":    "crm_id.marketo.munchkin_id",
+      "display_name":    "Marketo Munchkin Cookie ID",
+      "category":        "platform_cookie",
+      "vendor":          "marketo",
+      "signal_name":     "munchkin_id",
+      "cookie_name":     "_mkto_trk",
+      "platforms":       ["marketo"],
+      "deterministic":   false,
+      "pii":             false,
+      "lifetime_days":   730,
+      "capture_method":  "browser_cookie",
+      "notes":           "Marketo's visitor tracking cookie. Associates with a lead record on form fill. Long-lived — good stitching signal for B2B orgs on Marketo."
+    },
+
+    // ── FIRST-PARTY HASHED ──────────────────────────────────────────────────
+
+    {
+      "namespace_id":    "first_party_hashed.email_sha256",
+      "display_name":    "Email Address (SHA-256 hashed)",
+      "category":        "first_party_hashed",
+      "vendor":          null,
+      "signal_name":     "email_sha256",
+      "platforms":       ["meta", "google_ads", "linkedin", "tiktok", "snapchat", "pinterest", "twitter_x"],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   null,
+      "capture_method":  "crm_api",
+      "hash_algorithm":  "SHA-256",
+      "normalize_before_hash": "lowercase, trim whitespace",
+      "notes":           "Highest-confidence cross-platform stitching signal. Used for enhanced conversions (Google), CAPI (Meta), Conversions API (LinkedIn, TikTok, Snap). NEVER store raw email — hash before ingestion. SHA-256 in lowercase hex, normalized (lowercase + trimmed) before hashing."
+    },
+    {
+      "namespace_id":    "first_party_hashed.email_md5",
+      "display_name":    "Email Address (MD5 hashed)",
+      "category":        "first_party_hashed",
+      "vendor":          null,
+      "signal_name":     "email_md5",
+      "platforms":       ["meta", "linkedin"],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   null,
+      "capture_method":  "crm_api",
+      "hash_algorithm":  "MD5",
+      "normalize_before_hash": "lowercase, trim whitespace",
+      "notes":           "MD5 hash of normalized email. Some platforms (Meta) accept MD5 alongside SHA-256. Prefer SHA-256 where possible — MD5 is considered cryptographically weak."
+    },
+    {
+      "namespace_id":    "first_party_hashed.phone_sha256",
+      "display_name":    "Phone Number (SHA-256 hashed)",
+      "category":        "first_party_hashed",
+      "vendor":          null,
+      "signal_name":     "phone_sha256",
+      "platforms":       ["meta", "google_ads", "tiktok", "snapchat"],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   null,
+      "capture_method":  "crm_api",
+      "hash_algorithm":  "SHA-256",
+      "normalize_before_hash": "E.164 format (+1XXXXXXXXXX), remove non-digits except leading +",
+      "notes":           "Phone normalized to E.164 format before hashing. Include country code. Match rates are lower than email but useful as a secondary signal, especially on Meta and TikTok."
+    },
+    {
+      "namespace_id":    "first_party_hashed.first_name_sha256",
+      "display_name":    "First Name (SHA-256 hashed)",
+      "category":        "first_party_hashed",
+      "vendor":          null,
+      "signal_name":     "first_name_sha256",
+      "platforms":       ["meta", "google_ads"],
+      "deterministic":   false,
+      "pii":             false,
+      "lifetime_days":   null,
+      "capture_method":  "crm_api",
+      "hash_algorithm":  "SHA-256",
+      "normalize_before_hash": "lowercase, trim, remove punctuation",
+      "notes":           "Used in combination with last_name and zip for enhanced matching on Meta CAPI and Google Enhanced Conversions. Low confidence alone — only useful as part of a multi-signal bundle."
+    },
+    {
+      "namespace_id":    "first_party_hashed.last_name_sha256",
+      "display_name":    "Last Name (SHA-256 hashed)",
+      "category":        "first_party_hashed",
+      "vendor":          null,
+      "signal_name":     "last_name_sha256",
+      "platforms":       ["meta", "google_ads"],
+      "deterministic":   false,
+      "pii":             false,
+      "lifetime_days":   null,
+      "capture_method":  "crm_api",
+      "hash_algorithm":  "SHA-256",
+      "normalize_before_hash": "lowercase, trim, remove punctuation",
+      "notes":           "See first_name_sha256. Used with first name + location as a bundle."
+    },
+
+    // ── FIRST-PARTY RAW (non-PII) ────────────────────────────────────────────
+
+    {
+      "namespace_id":    "first_party_raw.internal_user_id",
+      "display_name":    "Internal User ID",
+      "category":        "first_party_raw",
+      "vendor":          null,
+      "signal_name":     "user_id",
+      "platforms":       [],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   null,
+      "capture_method":  "application",
+      "notes":           "The org's own authenticated user identifier (not an email). Set post-login. Highest-confidence stitching anchor for authenticated journeys. Must not be an email address or other PII — use an opaque internal ID."
+    },
+    {
+      "namespace_id":    "first_party_raw.internal_account_id",
+      "display_name":    "Internal Account / Company ID",
+      "category":        "first_party_raw",
+      "vendor":          null,
+      "signal_name":     "account_id",
+      "platforms":       [],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   null,
+      "capture_method":  "application",
+      "notes":           "B2B: the org's own identifier for a company/account, distinct from any CRM ID. Key for multi-stakeholder B2B journeys where multiple users from one account touch different campaigns."
+    },
+    {
+      "namespace_id":    "first_party_raw.order_id",
+      "display_name":    "Order / Transaction ID",
+      "category":        "first_party_raw",
+      "vendor":          null,
+      "signal_name":     "order_id",
+      "platforms":       [],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   null,
+      "capture_method":  "application",
+      "notes":           "Used for conversion deduplication across browser-side and server-side events. Pass to CM360 Floodlight (u-variable), GA4, and all CAPI implementations to prevent double-counting."
+    },
+
+    // ── NETWORK ─────────────────────────────────────────────────────────────
+
+    {
+      "namespace_id":    "network.ip_address",
+      "display_name":    "IP Address",
+      "category":        "network",
+      "vendor":          null,
+      "signal_name":     "ip_address",
+      "platforms":       [],
+      "deterministic":   false,
+      "pii":             true,
+      "lifetime_days":   null,
+      "capture_method":  "server_side",
+      "notes":           "IMPORTANT: Treat as PII. Never store raw IP addresses in the identity graph or signal tables. Use only for ephemeral probabilistic matching (company identification via IP intelligence providers like Clearbit Reveal, 6sense, Demandbase). Store the resolved company domain or account ID, not the IP itself. Truncate to /24 for any logging."
+    },
+    {
+      "namespace_id":    "network.email_domain",
+      "display_name":    "Email Domain",
+      "category":        "network",
+      "vendor":          null,
+      "signal_name":     "email_domain",
+      "platforms":       [],
+      "deterministic":   false,
+      "pii":             false,
+      "lifetime_days":   null,
+      "capture_method":  "crm_api",
+      "notes":           "The domain portion of an email address (e.g. 'acme.com'). Non-PII. Key B2B stitching signal — used to roll multiple contacts up to one company account. Exclude free email domains (gmail.com, outlook.com, etc.) from account-level matching."
+    },
+
+    // ── DEVICE IDs ──────────────────────────────────────────────────────────
+
+    {
+      "namespace_id":    "device_id.apple.idfa",
+      "display_name":    "Apple IDFA",
+      "category":        "device_id",
+      "vendor":          "apple",
+      "signal_name":     "idfa",
+      "platforms":       ["meta", "tiktok", "snapchat", "amazon_ads"],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   null,
+      "capture_method":  "mobile_sdk",
+      "notes":           "Apple's Identifier for Advertisers. Opt-in only post iOS 14.5 (ATT framework). Availability is low for most apps (~20-30% opt-in rates). When available, highest-confidence mobile identity signal."
+    },
+    {
+      "namespace_id":    "device_id.google.gaid",
+      "display_name":    "Google Advertising ID (GAID)",
+      "category":        "device_id",
+      "vendor":          "google",
+      "signal_name":     "gaid",
+      "platforms":       ["meta", "tiktok", "google_ads", "dv360"],
+      "deterministic":   true,
+      "pii":             false,
+      "lifetime_days":   null,
+      "capture_method":  "mobile_sdk",
+      "notes":           "Android equivalent of IDFA. User can reset or opt out. Deprecated on Android 12+ for apps targeting T+ (Android 13). Declining availability."
+    },
+
+    // ── COHORT / PRIVACY-PRESERVING ─────────────────────────────────────────
+
+    {
+      "namespace_id":    "cohort.google.topics_api",
+      "display_name":    "Google Topics API Signal",
+      "category":        "cohort",
+      "vendor":          "google",
+      "signal_name":     "topics_api",
+      "platforms":       ["google_ads", "dv360"],
+      "deterministic":   false,
+      "pii":             false,
+      "lifetime_days":   7,
+      "capture_method":  "browser_api",
+      "notes":           "Privacy Sandbox Topics API — returns interest categories, not individual identifiers. Not usable for individual-level stitching. Use only for aggregate audience modeling."
+    },
+
+    // ── CUSTOM (org-defined) ─────────────────────────────────────────────────
+
+    {
+      "namespace_id":    "custom.placeholder",
+      "display_name":    "Custom Identifier (placeholder)",
+      "category":        "custom",
+      "vendor":          null,
+      "signal_name":     "custom",
+      "platforms":       [],
+      "deterministic":   null,
+      "pii":             null,
+      "lifetime_days":   null,
+      "capture_method":  null,
+      "notes":           "Template entry for org-defined identifiers not covered by standard namespaces. Copy this entry and replace all fields. Use a namespace_id pattern of custom.{org_name}.{signal_name}."
+    }
+
+  ]
+}

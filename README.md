@@ -188,20 +188,24 @@ pip install -e .
 cp .env.example .env
 # GCP_PROJECT_ID is required; all platform credentials are optional per adapter
 
-# 3. Seed the sandbox dataset (90-day B2B synthetic data with forensic anomaly traps)
+# 3. Deploy BigQuery schema (first time only)
+bq mk --dataset YOUR_PROJECT_ID:paid_media
+bq query --use_legacy_sql=false < schema/bigquery/00_create_all.sql
+
+# 4. Seed the sandbox dataset (90-day B2B synthetic data with forensic anomaly traps)
 python tools/generate_sandbox_data.py --days 90
 
-# 4. Run agents locally
+# 5. Run agents locally
 python -m orchestrator.runner --agent watchdog
 python -m orchestrator.runner --agent analyst
 
-# 5. Review pending Operator actions before any live mutations
+# 6. Review pending Operator actions before any live mutations
 # In Claude Code:  get_pending_approvals()
 
-# 6. Deploy to Cloud Run
+# 7. Deploy to Cloud Run
 ```
 
-→ [Full deployment guide](https://github.com/arcticgreyy/paid-media-suite/blob/main/SETUP.md)
+→ [Full deployment guide](./SETUP.md)
 
 ---
 
@@ -209,52 +213,75 @@ python -m orchestrator.runner --agent analyst
 
 ```
 paid-media-agent/
+├── schema/                         # ← BigQuery DDL and identity contracts (was paid-media-schema)
+│   ├── bigquery/                   # 17 SQL files — deploy in numbered order
+│   │   ├── 00_create_all.sql       # Convenience: runs all files in sequence
+│   │   ├── 01_identity.sql         # Identity graph tables
+│   │   ├── 02_touchpoints.sql      # Sessions and touchpoint events
+│   │   ├── 03_platform.sql         # Campaigns, ad groups, daily spend
+│   │   ├── 04_attribution.sql      # Attribution paths, runs, results
+│   │   ├── 05_agent_outputs.sql    # Watchdog alerts, analyst insights, operator log
+│   │   ├── 06_reporting.sql        # Pre-built reporting views
+│   │   ├── 07_account_analytics.sql # Account-based analytics (IP-resolved)
+│   │   ├── 08_mmm.sql              # Meridian MMM runs + channel contributions
+│   │   ├── 09_incrementality.sql   # BSTS incrementality tests
+│   │   ├── 10_causal_impact.sql    # Causal impact analysis outputs
+│   │   ├── 12_social_listening.sql # Social mention staging
+│   │   ├── 13_reddit_ads.sql       # Reddit Ads spend + engagement
+│   │   ├── 14_audience_mutation.sql # Audience suppression audit log
+│   │   ├── 15_market_signals.sql   # Market intent signal staging
+│   │   ├── 16_attribution_forensics.sql # Forensic anomaly detection output
+│   │   ├── 17_unified_reporting.sql # Cross-channel unified reporting views
+│   │   └── migrations/             # Schema migration files
+│   ├── namespaces/
+│   │   └── identity_namespaces.json  # Registry of 30+ identity signal types
+│   └── json-files/
+│       └── schema.json             # JSON schema for simple mode (no BigQuery)
 ├── agents/
-│   ├── watchdog/          # Hourly data integrity monitor + forensic audit
-│   │   └── skills/        # Private watchdog playbooks (Open Core)
-│   ├── analyst/           # Daily attribution + causal modeling
-│   │   └── skills/        # Private market intelligence + MMM priors (Open Core)
-│   └── operator/          # Daily programmatic execution layer
-│       └── skills/        # Private operator playbooks (Open Core)
+│   ├── watchdog/                   # Hourly data integrity monitor + forensic audit
+│   │   └── skills/                 # Private watchdog playbooks (Open Core)
+│   ├── analyst/                    # Daily attribution + causal modeling
+│   │   └── skills/                 # Private market intelligence + MMM priors (Open Core)
+│   └── operator/                   # Daily programmatic execution layer
+│       └── skills/                 # Private operator playbooks (Open Core)
 ├── tools/
-│   ├── google_ads_operator.py     # Task 21 — atomic Google Ads budget mutations
-│   ├── tiktok_ads_operator.py     # Task 20 — atomic TikTok budget mutations
-│   ├── causal_analyst_engine.py   # Task 24 — JAX BSTS incrementality engine
-│   ├── meridian_analyst_engine.py # Task 27 — Google Meridian MMM wrapper
-│   ├── mmm_optimizer_analyst.py   # Task 27 — posterior → task27.v1 budget package
-│   ├── account_analytics_inspector.py  # Tasks 29–32 — account-based analytics
-│   ├── attribution_models.py      # Shapley value + Markov chain attribution
-│   ├── skill_resolver.py          # Open Core isolation — private .md loader
-│   ├── generate_sandbox_data.py   # 90-day B2B synthetic dataset + anomaly traps
-│   ├── bigquery_client.py         # BigQuery write layer (NUMERIC fields enforced)
-│   ├── ip_intelligence_client.py  # IP → company resolution (no raw IP storage)
-│   └── [platform clients]         # meta, linkedin, tiktok, reddit, gmp, google_ads
-├── schemas/
-│   └── bigquery_tables.py         # DDL aligned to paid-media-schema
+│   ├── google_ads_operator.py      # Atomic Google Ads budget mutations
+│   ├── tiktok_ads_operator.py      # Atomic TikTok budget mutations
+│   ├── causal_analyst_engine.py    # JAX BSTS incrementality engine
+│   ├── meridian_analyst_engine.py  # Google Meridian MMM wrapper
+│   ├── mmm_optimizer_analyst.py    # Posterior → task27.v1 budget package
+│   ├── account_analytics_inspector.py  # Account-based analytics
+│   ├── attribution_models.py       # Shapley value + Markov chain attribution
+│   ├── skill_resolver.py           # Open Core isolation — private .md loader
+│   ├── generate_sandbox_data.py    # 90-day B2B synthetic dataset + anomaly traps
+│   ├── bigquery_client.py          # BigQuery write layer (NUMERIC fields enforced)
+│   ├── ip_intelligence_client.py   # IP → company resolution (no raw IP storage)
+│   └── [platform clients]          # meta, linkedin, tiktok, reddit, gmp, google_ads
 ├── config/
-│   └── settings.py                # Pydantic BaseSettings — all config from .env
+│   └── settings.py                 # Pydantic BaseSettings — all config from .env
 ├── deploy/
-│   ├── cloud_run/                  # Cloud Run service configurations
-│   └── cloud_scheduler/            # Cron job definitions
-└── orchestrator/                   # Agent runner and scheduling logic
+│   ├── cloud_run/                   # Cloud Run service configurations
+│   └── cloud_scheduler/             # Cron job definitions
+├── orchestrator/                    # Agent runner and scheduling logic
+├── SETUP.md                         # Full deployment guide
+└── AGENT.md                         # Unified agent definition and capabilities
 ```
 
 ---
 
-## Part of the Paid Media AI Suite
+## The Three Repos
 
-| Component | Role |
+| Repo | Role |
 |---|---|
-| **[paid-media-schema](https://github.com/arcticgreyy/paid-media-schema)** | Shared data contract — BigQuery DDL and identity namespace registry |
-| **[paid-media-mcp](https://github.com/arcticgreyy/paid-media-mcp)** | Interactive data server — connects Claude to campaign data and agent outputs |
-| **[paid-media-agent](https://github.com/arcticgreyy/paid-media-agent)** ← you are here | Autonomous agents — Watchdog, Analyst, Operator on Cloud Run |
-| **[skills](https://github.com/arcticgreyy/skills)** | Interactive skill library — 16 paid-media skills for Claude Code |
+| **[paid-media-agent](https://github.com/arcticgreyy/paid-media-agent)** ← you are here | Autonomous agents + BigQuery schema DDL + deployment docs — the core |
+| **[paid-media-mcp](https://github.com/arcticgreyy/paid-media-mcp)** | Interactive data server — connects Claude Code to live campaign data and agent outputs |
+| **[skills](https://github.com/arcticgreyy/skills)** | Interactive skill library — 16+ paid-media skills for Claude Code |
 
 ---
 
 ## Schema Alignment
 
-This agent writes to tables defined in [paid-media-schema](https://github.com/arcticgreyy/paid-media-schema). The `paid-media-mcp` reads from the same tables — this is the integration point that closes the loop between autonomous agent outputs and interactive Claude Code skill sessions.
+All BigQuery DDL lives in `schema/bigquery/` — 17 SQL files covering every table the agents read and write. The `paid-media-mcp` reads from the same tables — this is the integration point that closes the loop between autonomous agent outputs and interactive Claude Code skill sessions.
 
 | Agent | Tables Written |
 |---|---|

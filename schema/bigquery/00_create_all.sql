@@ -1,0 +1,173 @@
+-- Copyright 2026 @arcticgreyy. All rights reserved.
+-- Licensed under the Business Source License 1.1 (BSL 1.1)
+-- Persistent Attribution Required. See /LICENSE and /NOTICE for terms.
+-- Central Suite Repository: https://github.com/arcticgreyy/paid-media-suite
+
+-- =============================================================================
+-- PAID MEDIA SCHEMA — MASTER SETUP SCRIPT
+-- =============================================================================
+-- Run this once to create all tables in a new BigQuery dataset.
+-- Replace {project} and {dataset} with your values before running.
+--
+-- Execution order matters — identity tables must exist before touchpoints,
+-- touchpoints before attribution.
+--
+-- Usage:
+--   bq mk --dataset {project}:{dataset}
+--   sed 's/{project}/my-project/g; s/{dataset}/paid_media/g' 00_create_all.sql | bq query --use_legacy_sql=false
+-- =============================================================================
+
+-- 1. Identity layer (foundation — no dependencies)
+-- Source: 01_identity.sql
+-- Tables: identity_signals, identity_entities, identity_entity_signals, identity_stitching_log
+
+-- 2. Touchpoint layer (depends on identity)
+-- Source: 02_touchpoints.sql
+-- Tables: sessions, touchpoint_events, conversion_events
+
+-- 3. Platform layer (depends on nothing — campaign metadata is standalone)
+-- Source: 03_platform.sql
+-- Tables: platform_campaigns, platform_ad_groups, platform_ads,
+--         platform_daily_spend, platform_daily_spend_ad_group
+
+-- 4. Attribution layer (depends on identity + touchpoints + platform)
+-- Source: 04_attribution.sql
+-- Tables: attribution_paths, attribution_runs, attribution_results,
+--         attribution_channel_summary
+
+-- 5. Agent output layer (depends on all of the above)
+-- Source: 05_agent_outputs.sql
+-- Tables: watchdog_alerts, watchdog_capture_rate_log,
+--         analyst_insights, operator_action_log, operator_pending_approvals
+
+-- 6. Reporting layer (depends on platform + attribution layers)
+-- Source: 06_reporting.sql
+-- Tables: platform_keywords, platform_daily_spend_ad, platform_daily_spend_keyword
+-- Views:  v_campaign_performance, v_pacing_status, v_roas_comparison,
+--         v_channel_efficiency, v_ad_performance, v_keyword_performance,
+--         v_daily_performance
+
+-- 7. Account-based analytics layer (depends on identity + touchpoint + reporting layers)
+-- Source: 07_account_analytics.sql
+-- Tables: company_profiles, ip_resolution_cache, company_sessions,
+--         company_engagement, target_account_activity
+-- Views:  v_target_account_funnel, v_dark_funnel_coverage
+
+-- =============================================================================
+-- TABLE DEPENDENCY MAP
+-- =============================================================================
+--
+--  identity_entities ◄──────────────────────────────────────────┐
+--  identity_signals  ◄──────────┐                              │
+--  identity_entity_signals       │                              │
+--  identity_stitching_log        │                              │
+--          │                    │                              │
+--          ▼                    │                              │
+--      sessions ────────────────┘                              │
+--          │                                                   │
+--          ▼                                                   │
+--  touchpoint_events ──────────────────────────────────────────┤
+--  conversion_events ──────────────────────────────────────────┤
+--          │                                                   │
+--          ▼                                                   │
+--  platform_campaigns ◄── platform_ad_groups ◄── platform_ads  │
+--  platform_daily_spend                                        │
+--  platform_daily_spend_ad_group                               │
+--          │                                                   │
+--          ▼                                                   │
+--  attribution_paths ──────────────────────────────────────────┘
+--  attribution_runs
+--  attribution_results
+--  attribution_channel_summary
+--          │
+--          ▼
+--  watchdog_alerts
+--  watchdog_capture_rate_log
+--  analyst_insights
+--  operator_action_log
+--  operator_pending_approvals
+--          │
+--          ▼
+--  platform_keywords ◄── platform_daily_spend_keyword
+--  platform_daily_spend_ad
+--          │
+--          ▼ (views — read-only, no data stored)
+--  v_campaign_performance
+--  v_pacing_status
+--  v_roas_comparison
+--  v_channel_efficiency
+--  v_ad_performance
+--  v_keyword_performance
+--  v_daily_performance
+--          │
+--          ▼
+--  company_profiles ◄── ip_resolution_cache
+--  company_sessions ────────────────────────┐
+--  company_engagement                       │
+--  target_account_activity                  │
+--          │                                │
+--          ▼ (views)                        │
+--  v_target_account_funnel ◄────────────────┘
+--  v_dark_funnel_coverage
+
+-- =============================================================================
+-- IDENTITY NAMESPACE REFERENCE
+-- =============================================================================
+-- All namespace_id values used in identity_signals and identity_entity_signals
+-- must be registered in:
+--   namespaces/identity_namespaces.json
+--
+-- Key namespaces by category:
+--
+-- PLATFORM CLICK IDs (deterministic):
+--   platform_click_id.google.gclid       Google Ads / SA360
+--   platform_click_id.google.dclid       DV360 / CM360
+--   platform_click_id.google.wbraid      Google (iOS, non-deterministic)
+--   platform_click_id.google.gbraid      Google (iOS, non-deterministic)
+--   platform_click_id.microsoft.msclkid  Microsoft Ads
+--   platform_click_id.meta.fbclid        Meta
+--   platform_click_id.linkedin.li_fat_id LinkedIn
+--   platform_click_id.tiktok.ttclid      TikTok
+--   platform_click_id.snapchat.sccid     Snapchat
+--   platform_click_id.pinterest.epik     Pinterest
+--   platform_click_id.twitter.twclid     X/Twitter
+--   platform_click_id.amazon.amzn_clid   Amazon
+--
+-- PLATFORM COOKIES:
+--   platform_cookie.meta.fbc             Meta click cookie (durable fbclid)
+--   platform_cookie.meta.fbp             Meta browser cookie
+--   platform_cookie.linkedin.li_sugr     LinkedIn Insight Tag
+--   crm_id.hubspot.browser_cookie        HubSpot __hstc
+--   crm_id.marketo.munchkin_id           Marketo _mkto_trk
+--
+-- ANALYTICS:
+--   analytics_cookie.google.ga4_client_id  GA4 _ga cookie
+--   analytics_cookie.adobe.ecid            Adobe ECID/MCID
+--   analytics_cookie.segment.anonymous_id  Segment pre-auth
+--   analytics_user_id.google.ga4_user_id   GA4 user ID (org-set)
+--   analytics_user_id.segment.user_id      Segment post-identify
+--
+-- CRM:
+--   crm_id.salesforce.contact_id
+--   crm_id.salesforce.account_id
+--   crm_id.salesforce.lead_id
+--   crm_id.hubspot.contact_id
+--
+-- FIRST-PARTY (hashed):
+--   first_party_hashed.email_sha256      SHA-256 normalized email
+--   first_party_hashed.email_md5         MD5 normalized email
+--   first_party_hashed.phone_sha256      SHA-256 E.164 phone
+--   first_party_hashed.first_name_sha256
+--   first_party_hashed.last_name_sha256
+--
+-- FIRST-PARTY (raw, non-PII):
+--   first_party_raw.internal_user_id    Org's own user ID
+--   first_party_raw.internal_account_id Org's own account/company ID
+--   first_party_raw.order_id            Transaction/order ID (dedup)
+--
+-- NETWORK:
+--   network.email_domain                Email domain (non-PII, B2B stitching)
+--   network.ip_address                  NEVER store raw — resolve to domain/company only
+--
+-- CUSTOM:
+--   custom.{org}.{signal}              Org-defined identifiers
