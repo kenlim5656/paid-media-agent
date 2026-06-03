@@ -1,51 +1,182 @@
 # Paid Media Agent
 
-Autonomous agents for paid media — Watchdog, Analyst, and Operator — running on Cloud Run.
+**The autonomous execution layer of the Paid Media AI Suite** — three AI agents that forensically audit marketing data, model causal performance with Bayesian math, and execute programmatic budget shifts across five ad networks with strict pre-flight guardrails. Not a dashboard wrapper. Not another SaaS integration. Infrastructure.
+
 Part of the [Paid Media AI Suite](https://github.com/arcticgreyy/paid-media-suite).
 
 ---
 
-## Part of the Paid Media AI Suite
+## System Architecture
 
-| Component | Role |
-|-----------|------|
-| **[paid-media-schema](https://github.com/arcticgreyy/paid-media-schema)** | Shared data contract — BigQuery DDL and identity namespace registry |
-| **[paid-media-mcp](https://github.com/arcticgreyy/paid-media-mcp)** | Interactive data server — connects Claude to campaign data and agent outputs |
-| **[paid-media-agent](https://github.com/arcticgreyy/paid-media-agent)** ← you are here | Autonomous agents — Watchdog, Analyst, Operator on Cloud Run |
-| **[skills](https://github.com/arcticgreyy/skills)** | Interactive skill library — 16 paid-media skills for Claude Code |
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                   PAID MEDIA AGENT — CLOSED-LOOP ENGINE                         │
+└─────────────────────────────────────────────────────────────────────────────────┘
 
-→ [Full setup guide](https://github.com/arcticgreyy/paid-media-suite/blob/main/SETUP.md)
+  ① TELEMETRY           ② FORENSIC AUDIT      ③ BAYESIAN MODELS     ④ OPEN CORE
+     INGESTION             (Watchdog)            (Analyst)              ISOLATION
+  ─────────────────     ─────────────────     ─────────────────     ─────────────
+  Google Ads            Signal capture        BSTS Causal Model     SkillResolver
+  TikTok Ads            CRM null spikes       • Incrementality      • Loads private
+  Meta Ads              Forensic State        • Counterfactuals       .md playbooks
+  LinkedIn              Machine (T37)         • Credible bands        at runtime
+  Reddit Ads            • Overwrite traps                           • Never logged
+  GA4 Sessions          • systemmodstamp      Meridian MMM          • Zero data
+  Salesforce CRM          drift detection     • Posterior ROI         outflow from
+  IP Intelligence       • Anomaly scoring     • Budget packages       corporate IP
+       │                → watchdog_alerts          │
+       └──────────────────────┬───────────────────┘
+                              │
+                    ┌─────────▼──────────┐        ← Open Core private context
+                    │   Analyst Agent    │ ◄─────────────────────────────────────┐
+                    │ • Identity graph   │                                        │
+                    │ • Shapley / Markov │    private_market_intelligence.md      │
+                    │ • Account-based    │    private_account_intent.md           │
+                    │   analytics        │    private_meridian_priors.md          │
+                    │ • Social signals   │                                        │
+                    │ • Creative intel   │                                        │
+                    └─────────┬──────────┘
+                              │
+                    ┌─────────▼──────────────────────────────────────────────────┐
+                    │   Operator Agent  ⑤ PROGRAMMATIC EXECUTION                 │
+                    │                                                             │
+                    │   Pre-flight guardrail sweep  (all-or-nothing gate)         │
+                    │   ──────────────────────────────────────────────────        │
+                    │   • Schema version + approval flag validated                │
+                    │   • Max shift cap: ±10% per channel per run (in code)       │
+                    │   • Platform floor minimums enforced before any mutation    │
+                    │   • Full error list returned if any check fails             │
+                    │                                                             │
+                    │   Sequential mutation loop                                  │
+                    │   ──────────────────────────────────────────────────        │
+                    │   Google Ads → TikTok → Meta → LinkedIn → Reddit            │
+                    │   + DV360 / SA360 audience suppression                      │
+                    │                                                             │
+                    │   → operator_action_log (BigQuery, full audit trail)        │
+                    └─────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## The three agents
+## Core Capabilities
 
-### Watchdog (runs hourly)
-Monitors data quality across all platform signal namespaces — gclid, fbclid, li_fat_id, ttclid, GA4 client_id, and more. Checks for CRM null field spikes. Writes structured alerts to `watchdog_alerts` and capture rate history to `watchdog_capture_rate_log`. Sends Slack notifications on threshold breaches.
-
-### Analyst (runs daily)
-Stitches identity signals into canonical entities, then computes multi-touch attribution. Supports three models: Full-Path (default), Shapley Value (data-driven, ≥1K paths), and Markov Chain (fast, many channels). Writes results to `attribution_results` and `attribution_channel_summary`. Surfaces findings to `analyst_insights`.
-
-### Operator (runs daily, after Analyst)
-Reads attribution results and acts. Suppresses pipeline accounts from top-of-funnel ads (DV360, Meta, LinkedIn). Reallocates budget from underperforming campaigns to high-attribution channels. All actions logged to `operator_action_log`. Requires human approval by default — review via `get_pending_approvals` in Claude Code.
+| Capability | Engine | What It Does |
+|---|---|---|
+| **Data Integrity** | Task 37 Forensic State Machine | Catches Salesforce CRM attribution overwrites by fingerprinting `systemmodstamp` + `lead_source_updated_at` drift. Surfaces hidden pipeline attribution poisoning before it contaminates models. |
+| **Causal Measurement** | Task 24 JAX-backed BSTS | Bayesian Structural Time Series counterfactual modeling for true incrementality. Isolates paid media lift from organic trends with credible-interval confidence bands. |
+| **Portfolio Allocation** | Task 27 Google Meridian MMM | Bayesian Marketing Mix Model with pre-computed posterior summaries. Adjusted ROI means + confidence tiers (`high` / `medium` / `low`) feed directly into `task27.v1` budget recommendation packages. |
+| **Programmatic Write** | Tasks 20 & 21 — All-or-nothing mutation gates | Sequential budget mutations across Google Ads, TikTok, Meta, LinkedIn, and Reddit. Zero mutations applied if any pre-flight guardrail check fails — schema version, approval flag, shift cap, and platform floors all validated before the first API call. |
 
 ---
 
-## Platform adapters
+## Security & Privacy Architecture
 
-| Platform | Audience suppression | Budget reallocation |
-|----------|---------------------|---------------------|
-| DV360 | ✓ | ✓ |
-| SA360 | — | ✓ |
-| CM360 | — | — |
-| Meta | ✓ | ✓ |
-| LinkedIn | ✓ | ✓ |
-| TikTok | Planned | Planned |
-| Google Ads | Planned | Planned |
+### The Open Core Isolation Pattern
+
+Corporate strategy and sensitive client playbooks are never committed to version control and never flow through agent inference logs. The `SkillResolver` (`tools/skill_resolver.py`) enforces this boundary programmatically:
+
+```
+agents/analyst/skills/
+├── private_market_intelligence.md   ← loaded at runtime, never logged
+├── private_account_intent.md        ← ICP tiers, suppression lists, intent thresholds
+└── private_meridian_priors.md       ← channel-specific MMM prior beliefs
+```
+
+At inference time the resolver reads the relevant `.md` file and injects its contents into the agent's system prompt for that run only. The file contents are held in memory during the inference pass — they are never:
+
+- Written to `operator_action_log` or any BigQuery table
+- Included in structured log output (structlog fields are whitelisted)
+- Echoed in agent tool responses or Markdown summaries
+
+This decouples proprietary IP from public code commits — the repository is safe to open-source or share while competitive strategy remains private to each deployment.
+
+### Data Governance Constraints
+
+Enforced in code, not just documentation:
+
+| Control | Enforcement |
+|---|---|
+| `OPERATOR_REQUIRE_APPROVAL=true` default | Write operations raise `ApprovalRequiredError` unless explicitly disabled |
+| `MAX_BUDGET_SHIFT_PCT=10` | Pre-flight sweep rejects any recommendation where `abs(shift_pct) > policy` |
+| No raw PII storage | Sessions store `/24` IP prefix + resolved `company_domain` only; raw IPs never persisted |
+| Reddit handle hashing | `author_handle` stored as SHA-256 hash in `social_mentions_staging`; raw handle never written |
+| Financial fields as NUMERIC | All currency columns use BigQuery `NUMERIC` type — never `FLOAT64` |
+| CRM data isolation | Raw emails never logged; only domain-level counts exposed externally |
+| Credential isolation | `google-ads.yaml`, `tiktok-ads.yaml`, `reddit-ads.yaml` are in `.gitignore` and `.claudeignore`; production credentials pulled from GCP Secret Manager |
 
 ---
 
-## Quick start
+## The Three Agents
+
+### Watchdog — runs hourly
+
+Monitors data quality across all platform signal namespaces: `gclid`, `fbclid`, `li_fat_id`, `ttclid`, `GA4 client_id`, and IP-resolved company signals. Runs the **Task 37 Forensic State Machine** — a multi-trap anomaly detector that identifies:
+
+- **Trap A — Salesforce overwrite:** CRM leads where `systemmodstamp = lead_source_updated_at = created_at` with offline `lead_source` values on records that originated from paid clicks. The fingerprint of a bulk Salesforce import that silently rewrites digital attribution to "Trade Show" or "Content Syndication."
+- **Trap B — Organic surge masking paid lift:** A 5× organic session multiplier with flat paid spend across a 5-day window — creates a clean BSTS counterfactual that exposes false incrementality claims.
+- **Trap C — Vertical revenue concentration:** Logistics & Supply Chain closed-won deals accumulating to ≥45% of 30-day revenue — flags model contamination from segment over-indexing before it skews MMM priors.
+
+Writes structured alerts to `watchdog_alerts` and capture rate history to `watchdog_capture_rate_log`. Sends Slack notifications on threshold breaches.
+
+### Analyst — runs daily
+
+Stitches identity signals into canonical entities, then computes multi-touch attribution across three models:
+
+| Model | When | Description |
+|---|---|---|
+| **Full-Path** | Always (default) | Position-weighted: first/last touch 40% each, middle touches share 20% |
+| **Shapley Value** | ≥ 1,000 unique paths | Game-theoretic, data-driven credit allocation across all channel combinations |
+| **Markov Chain** | Many-channel programs | Removal-effect transition matrix; fast and channel-count-agnostic |
+
+Also runs:
+
+- **BSTS Causal Analysis** (`causal_analyst_engine.py`) — JAX-backed Bayesian Structural Time Series for incrementality modeling with counterfactual intervals
+- **Meridian MMM** (`meridian_analyst_engine.py`, `mmm_optimizer_analyst.py`) — Google Meridian wrapper with posterior summary export and `task27.v1` budget recommendation packages
+- **Account-Based Analytics** (`account_analytics_inspector.py`) — IP-resolved company-level attribution; `intent_score` from firmographic signals, session depth, and multi-channel footprint
+- **Social Listening** (`social_listening_client.py`) — brand mention signals enriched into attribution context
+- **Creative Intelligence** (`creative_insights_client.py`) — asset-level performance signals feeding creative strategy recommendations
+
+Writes to: `attribution_results`, `attribution_channel_summary`, `analyst_insights`, `mmm_runs`, `mmm_channel_contributions`, `data_attribution_anomalies`.
+
+### Operator — runs daily, after Analyst
+
+Reads attribution results and acts. Two primary action classes:
+
+**Budget Reallocation** (`execute_system_budget_reallocation`)
+Ingests a `task27.v1` MMM optimization package from the Analyst and executes budget mutations across all five platforms. The pre-flight guardrail sweep is all-or-nothing — if any single check fails, zero mutations are applied and the full error list is returned for human review before any retry.
+
+**Audience Suppression** (`sync_evolving_lookalike_seeds`)
+Pushes pipeline account lists to DV360, Meta, and LinkedIn to suppress in-flight accounts from top-of-funnel acquisition spend. Prevents wasted impressions on companies already in active sales cycles.
+
+All actions logged to `operator_action_log`. Human approval required by default — review via `get_pending_approvals` in Claude Code.
+
+---
+
+## Platform Adapters
+
+| Platform | Audience Suppression | Budget Reallocation | Module |
+|---|---|---|---|
+| **Google Ads** | — | ✓ | `tools/google_ads_operator.py` |
+| **TikTok Ads** | — | ✓ | `tools/tiktok_ads_operator.py` |
+| **Meta** | ✓ | ✓ | `tools/meta_client.py` |
+| **LinkedIn** | ✓ | ✓ | `tools/linkedin_client.py` |
+| **Reddit Ads** | — | ✓ | `tools/reddit_ads_client.py` |
+| **DV360** | ✓ | ✓ | `tools/gmp_client.py` |
+| **SA360** | — | ✓ | `tools/gmp_client.py` |
+
+**Platform budget floors enforced in code:**
+
+| Platform | Daily Floor | Lifetime Floor |
+|---|---|---|
+| Google Ads | $5.00/day | — |
+| TikTok Ads | $20.00/day | $50.00 |
+| Meta | $1.00/day | — |
+| LinkedIn | $10.00/day | — |
+| Reddit Ads | $5.00/day | — |
+
+---
+
+## Quick Start
 
 ```bash
 # 1. Clone and install
@@ -55,26 +186,87 @@ pip install -e .
 
 # 2. Configure credentials
 cp .env.example .env
-# Edit .env with your GCP, Salesforce, and platform credentials
+# GCP_PROJECT_ID is required; all platform credentials are optional per adapter
 
-# 3. Run the Watchdog locally to test
+# 3. Seed the sandbox dataset (90-day B2B synthetic data with forensic anomaly traps)
+python tools/generate_sandbox_data.py --days 90
+
+# 4. Run agents locally
 python -m orchestrator.runner --agent watchdog
+python -m orchestrator.runner --agent analyst
 
-# 4. Deploy to Cloud Run (see SETUP.md for full instructions)
+# 5. Review pending Operator actions before any live mutations
+# In Claude Code:  get_pending_approvals()
+
+# 6. Deploy to Cloud Run
 ```
 
-For full deployment instructions including Cloud Run and Cloud Scheduler setup,
-see the [suite setup guide](https://github.com/arcticgreyy/paid-media-suite/blob/main/SETUP.md).
+→ [Full deployment guide](https://github.com/arcticgreyy/paid-media-suite/blob/main/SETUP.md)
 
 ---
 
-## Schema alignment
+## Repository Structure
 
-This agent writes to tables defined in [paid-media-schema](https://github.com/arcticgreyy/paid-media-schema).
-The `paid-media-mcp` reads from the same tables — this is the integration point that closes the loop
-between autonomous agent outputs and interactive skill sessions.
+```
+paid-media-agent/
+├── agents/
+│   ├── watchdog/          # Hourly data integrity monitor + forensic audit
+│   │   └── skills/        # Private watchdog playbooks (Open Core)
+│   ├── analyst/           # Daily attribution + causal modeling
+│   │   └── skills/        # Private market intelligence + MMM priors (Open Core)
+│   └── operator/          # Daily programmatic execution layer
+│       └── skills/        # Private operator playbooks (Open Core)
+├── tools/
+│   ├── google_ads_operator.py     # Task 21 — atomic Google Ads budget mutations
+│   ├── tiktok_ads_operator.py     # Task 20 — atomic TikTok budget mutations
+│   ├── causal_analyst_engine.py   # Task 24 — JAX BSTS incrementality engine
+│   ├── meridian_analyst_engine.py # Task 27 — Google Meridian MMM wrapper
+│   ├── mmm_optimizer_analyst.py   # Task 27 — posterior → task27.v1 budget package
+│   ├── account_analytics_inspector.py  # Tasks 29–32 — account-based analytics
+│   ├── attribution_models.py      # Shapley value + Markov chain attribution
+│   ├── skill_resolver.py          # Open Core isolation — private .md loader
+│   ├── generate_sandbox_data.py   # 90-day B2B synthetic dataset + anomaly traps
+│   ├── bigquery_client.py         # BigQuery write layer (NUMERIC fields enforced)
+│   ├── ip_intelligence_client.py  # IP → company resolution (no raw IP storage)
+│   └── [platform clients]         # meta, linkedin, tiktok, reddit, gmp, google_ads
+├── schemas/
+│   └── bigquery_tables.py         # DDL aligned to paid-media-schema
+├── config/
+│   └── settings.py                # Pydantic BaseSettings — all config from .env
+├── deploy/
+│   ├── cloud_run/                  # Cloud Run service configurations
+│   └── cloud_scheduler/            # Cron job definitions
+└── orchestrator/                   # Agent runner and scheduling logic
+```
 
-Key tables written by each agent:
-- Watchdog → `watchdog_alerts`, `watchdog_capture_rate_log`
-- Analyst → `identity_entities`, `identity_entity_signals`, `attribution_runs`, `attribution_results`, `attribution_channel_summary`, `analyst_insights`
-- Operator → `operator_action_log`, `operator_pending_approvals`
+---
+
+## Part of the Paid Media AI Suite
+
+| Component | Role |
+|---|---|
+| **[paid-media-schema](https://github.com/arcticgreyy/paid-media-schema)** | Shared data contract — BigQuery DDL and identity namespace registry |
+| **[paid-media-mcp](https://github.com/arcticgreyy/paid-media-mcp)** | Interactive data server — connects Claude to campaign data and agent outputs |
+| **[paid-media-agent](https://github.com/arcticgreyy/paid-media-agent)** ← you are here | Autonomous agents — Watchdog, Analyst, Operator on Cloud Run |
+| **[skills](https://github.com/arcticgreyy/skills)** | Interactive skill library — 16 paid-media skills for Claude Code |
+
+---
+
+## Schema Alignment
+
+This agent writes to tables defined in [paid-media-schema](https://github.com/arcticgreyy/paid-media-schema). The `paid-media-mcp` reads from the same tables — this is the integration point that closes the loop between autonomous agent outputs and interactive Claude Code skill sessions.
+
+| Agent | Tables Written |
+|---|---|
+| Watchdog | `watchdog_alerts`, `watchdog_capture_rate_log` |
+| Analyst | `identity_entities`, `identity_entity_signals`, `attribution_runs`, `attribution_results`, `attribution_channel_summary`, `analyst_insights`, `mmm_runs`, `mmm_channel_contributions`, `data_attribution_anomalies` |
+| Operator | `operator_action_log`, `operator_pending_approvals`, `audience_mutation_logs` |
+| Generator | `platform_campaigns`, `platform_daily_spend`, `sessions`, `crm_leads_staging`, `crm_opportunities_staging`, `company_profiles`, `company_engagement`, `target_account_activity` |
+
+---
+
+## License
+
+Business Source License 1.1 (BSL 1.1). Persistent attribution required.
+See [LICENSE](./LICENSE) and [NOTICE](./NOTICE) for terms.
+© 2026 @arcticgreyy
