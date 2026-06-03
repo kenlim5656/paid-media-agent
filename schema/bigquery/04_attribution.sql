@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.attribution_paths`
     lookback_days       INT64,               -- days before conversion included in path
 
     -- Audit
-    assembled_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP(),
+    assembled_at        TIMESTAMP NOT NULL,
     assembled_by        STRING               -- "analyst_agent" | "import"
 )
 PARTITION BY DATE(converted_at)
@@ -181,7 +181,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.attribution_results`
     period_end          DATE,
 
     -- Ingestion
-    created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP()
+    created_at          TIMESTAMP NOT NULL
 )
 PARTITION BY conversion_date
 CLUSTER BY model_name, platform, channel, campaign_id
@@ -224,7 +224,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.attribution_channel_summary`
 
     -- Spend (joined from platform_daily_spend for the same period)
     total_spend             NUMERIC,
-    currency                STRING    DEFAULT 'USD',
+    currency                STRING,
 
     -- Efficiency (requires both attribution credit and spend)
     attributed_cpa          NUMERIC,         -- spend / attributed_conversions
@@ -237,7 +237,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.attribution_channel_summary`
     attribution_vs_platform_delta_pct FLOAT64, -- percentage delta (rate: FLOAT64 ok)
 
     -- Generated
-    generated_at            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP()
+    generated_at            TIMESTAMP NOT NULL
 )
 PARTITION BY period_start
 CLUSTER BY model_name, platform, channel

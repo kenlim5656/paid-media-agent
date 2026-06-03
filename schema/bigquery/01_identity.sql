@@ -45,10 +45,10 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.identity_signals`
 
     -- Lifecycle
     expires_at          TIMESTAMP,           -- based on namespace lifetime_days; null = indefinite
-    is_active           BOOL      NOT NULL DEFAULT TRUE,
+    is_active           BOOL      NOT NULL,
 
     -- Audit
-    ingested_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP(),
+    ingested_at         TIMESTAMP NOT NULL,
     source_system       STRING,              -- which component wrote this row
 
     -- Flexible extension: any additional context as JSON
@@ -90,12 +90,12 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.identity_entities`
     -- Lifecycle
     first_seen_at       TIMESTAMP,
     last_seen_at        TIMESTAMP,
-    created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP(),
-    updated_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP(),
+    created_at          TIMESTAMP NOT NULL,
+    updated_at          TIMESTAMP NOT NULL,
 
     -- Merge history (when two entities are merged into one)
     merged_into_entity_id STRING,           -- if this entity was merged, points to the survivor
-    is_active           BOOL      NOT NULL DEFAULT TRUE,
+    is_active           BOOL      NOT NULL,
 
     -- Flexible extension
     attributes          JSON                -- org-specific entity attributes
@@ -128,15 +128,15 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.identity_entity_signals`
 
     confidence_score    FLOAT64   NOT NULL,  -- 0.0–1.0
     stitched_by         STRING,              -- "watchdog_agent" | "analyst_agent" | "import" | "manual"
-    stitched_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP(),
+    stitched_at         TIMESTAMP NOT NULL,
 
     -- Signal lifecycle on this entity
     first_observed_at   TIMESTAMP,
     last_observed_at    TIMESTAMP,
-    observation_count   INT64     DEFAULT 1, -- how many times this signal has been seen for this entity
+    observation_count   INT64, -- how many times this signal has been seen for this entity
 
     -- Audit
-    is_active           BOOL      NOT NULL DEFAULT TRUE,
+    is_active           BOOL      NOT NULL,
     superseded_at       TIMESTAMP            -- set when a higher-confidence signal replaces this one
 )
 PARTITION BY DATE(stitched_at)
@@ -169,7 +169,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.identity_stitching_log`
 
     reason              STRING,              -- human-readable explanation of the decision
     triggered_by        STRING,              -- "analyst_agent" | "watchdog_agent" | "import" | "manual"
-    occurred_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP(),
+    occurred_at         TIMESTAMP NOT NULL,
 
     -- Before/after snapshot for corrections
     previous_state      JSON,

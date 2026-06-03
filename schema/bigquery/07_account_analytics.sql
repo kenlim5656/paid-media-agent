@@ -92,8 +92,8 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.company_profiles`
     advertising_technology   ARRAY<STRING>,       -- ad tech in use (e.g., ["DV360", "The Trade Desk"])
 
     -- ABM classification
-    is_target_account        BOOL      DEFAULT FALSE,  -- in the ICP / ABM named account list
-    is_icp_fit               BOOL      DEFAULT FALSE,  -- meets ideal customer profile criteria
+    is_target_account        BOOL,  -- in the ICP / ABM named account list
+    is_icp_fit               BOOL,  -- meets ideal customer profile criteria
     icp_score                FLOAT64,             -- 0–100 ICP fit score (org-defined)
     account_tier             STRING,
     -- "tier_1"   Strategic accounts (highest priority, fully personalized)
@@ -143,9 +143,9 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.company_profiles`
     first_seen_at            TIMESTAMP,          -- first web session resolved to this company
     last_seen_at             TIMESTAMP,          -- most recent web session
     total_session_count      INT64,              -- lifetime sessions from this company
-    created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP(),
-    updated_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP(),
-    is_active                BOOL      DEFAULT TRUE
+    created_at               TIMESTAMP NOT NULL,
+    updated_at               TIMESTAMP NOT NULL,
+    is_active                BOOL
 )
 PARTITION BY DATE(created_at)
 CLUSTER BY is_target_account, account_tier, crm_pipeline_stage
@@ -165,14 +165,14 @@ OPTIONS (
 --   This is a network-level identifier, not a user-level identifier.
 --   It cannot be used to identify or re-identify an individual.
 --
--- Cache TTL: 72 hours by default (configurable in enrichment job settings).
+-- Cache TTL: 72 hours by.
 -- Resolution confidence degrades over time as corporate networks change.
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `{project}.{dataset}.ip_resolution_cache`
 (
     cache_id                 STRING    NOT NULL,  -- UUID
     ip_prefix                STRING    NOT NULL,  -- /24 prefix only (e.g. "203.0.113") — never full IP
-    network_prefix_bits      INT64     DEFAULT 24, -- prefix length (24 = /24 CIDR)
+    network_prefix_bits      INT64, -- prefix length (24 = /24 CIDR)
 
     -- Resolution result
     resolved_company_domain  STRING,             -- NULL if resolution failed (e.g., residential, VPN)
@@ -199,15 +199,15 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.ip_resolution_cache`
     -- Cache metadata
     resolved_at              TIMESTAMP NOT NULL,
     expires_at               TIMESTAMP NOT NULL, -- resolved_at + TTL (typically 72h)
-    hit_count                INT64     DEFAULT 0, -- number of times this cache entry was used
+    hit_count                INT64, -- number of times this cache entry was used
     last_hit_at              TIMESTAMP,
 
     -- Quality flags
-    is_vpn                   BOOL      DEFAULT FALSE,
-    is_datacenter            BOOL      DEFAULT FALSE,
-    is_residential           BOOL      DEFAULT FALSE,
-    is_bot_suspected         BOOL      DEFAULT FALSE,
-    should_exclude_from_analytics BOOL DEFAULT FALSE  -- true for bots, DCs, VPNs
+    is_vpn                   BOOL,
+    is_datacenter            BOOL,
+    is_residential           BOOL,
+    is_bot_suspected         BOOL,
+    should_exclude_from_analytics BOOL
 )
 PARTITION BY DATE(resolved_at)
 CLUSTER BY ip_prefix, resolved_company_domain
@@ -263,17 +263,17 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.company_sessions`
     utm_campaign             STRING,
 
     -- Page-level signals (boolean flags for key pages visited in this session)
-    visited_pricing          BOOL      DEFAULT FALSE,
-    visited_demo             BOOL      DEFAULT FALSE,
-    visited_contact          BOOL      DEFAULT FALSE,
-    visited_docs             BOOL      DEFAULT FALSE,
-    visited_case_study       BOOL      DEFAULT FALSE,
-    visited_blog             BOOL      DEFAULT FALSE,
-    visited_careers          BOOL      DEFAULT FALSE,  -- flag for competitor research / job-seekers
-    visited_login            BOOL      DEFAULT FALSE,  -- flag: existing customer
+    visited_pricing          BOOL,
+    visited_demo             BOOL,
+    visited_contact          BOOL,
+    visited_docs             BOOL,
+    visited_case_study       BOOL,
+    visited_blog             BOOL,
+    visited_careers          BOOL,  -- flag for competitor research / job-seekers
+    visited_login            BOOL,  -- flag: existing customer
 
     -- Attribution context (did this session have a paid touchpoint?)
-    has_paid_touchpoint      BOOL      DEFAULT FALSE,
+    has_paid_touchpoint      BOOL,
     paid_touchpoint_platform STRING,              -- platform of the paid click/impression
     paid_touchpoint_campaign_id STRING,           -- → platform_campaigns.campaign_id
     paid_click_id_namespace  STRING,              -- namespace of the captured click ID
@@ -285,14 +285,14 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.company_sessions`
     crm_is_open_opportunity  BOOL,
 
     -- ABM context
-    is_target_account        BOOL      DEFAULT FALSE,
+    is_target_account        BOOL,
     account_tier             STRING,
 
     -- Entity linkage (if session's entity was stitched to the company entity)
     entity_id                STRING,             -- → identity_entities.entity_id
 
     -- Audit
-    resolved_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP(),
+    resolved_at              TIMESTAMP NOT NULL,
     enriched_by              STRING               -- "analyst_agent" | "sgtm_tag" | "import"
 )
 PARTITION BY session_date
@@ -385,7 +385,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.company_engagement`
     suppression_reason       STRING,            -- "open_opportunity" | "customer" | "competitor" | "manual"
 
     -- Audit
-    generated_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP(),
+    generated_at             TIMESTAMP NOT NULL,
     generated_by             STRING               -- "analyst_agent" | "scheduled_job"
 )
 PARTITION BY period_start
@@ -427,31 +427,31 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.target_account_activity`
     crm_open_opportunity_count INT64,
     crm_total_deal_value     FLOAT64,
     crm_last_activity_days_ago INT64,            -- days since last CRM activity
-    crm_stage_changed_today  BOOL      DEFAULT FALSE,  -- did stage change today?
+    crm_stage_changed_today  BOOL,  -- did stage change today?
     crm_stage_previous       STRING,             -- previous stage (if changed)
     crm_stage_new            STRING,             -- new stage (if changed)
 
     -- Web engagement today
-    web_sessions_today       INT64     DEFAULT 0,
-    web_page_views_today     INT64     DEFAULT 0,
-    web_unique_visitors_today INT64    DEFAULT 0,
-    visited_pricing_today    BOOL      DEFAULT FALSE,
-    visited_demo_today       BOOL      DEFAULT FALSE,
-    visited_contact_today    BOOL      DEFAULT FALSE,
-    visited_docs_today       BOOL      DEFAULT FALSE,
+    web_sessions_today       INT64,
+    web_page_views_today     INT64,
+    web_unique_visitors_today INT64,
+    visited_pricing_today    BOOL,
+    visited_demo_today       BOOL,
+    visited_contact_today    BOOL,
+    visited_docs_today       BOOL,
     channels_today           ARRAY<STRING>,       -- channel_groupings seen today
 
     -- Web engagement trailing windows
-    web_sessions_7d          INT64     DEFAULT 0,
-    web_sessions_30d         INT64     DEFAULT 0,
-    web_sessions_90d         INT64     DEFAULT 0,
-    pricing_visits_30d       INT64     DEFAULT 0,
-    demo_visits_30d          INT64     DEFAULT 0,
+    web_sessions_7d          INT64,
+    web_sessions_30d         INT64,
+    web_sessions_90d         INT64,
+    pricing_visits_30d       INT64,
+    demo_visits_30d          INT64,
 
     -- Paid media exposure
-    paid_touchpoints_today   INT64     DEFAULT 0,
-    paid_touchpoints_7d      INT64     DEFAULT 0,
-    paid_touchpoints_30d     INT64     DEFAULT 0,
+    paid_touchpoints_today   INT64,
+    paid_touchpoints_7d      INT64,
+    paid_touchpoints_30d     INT64,
     paid_platforms_30d       ARRAY<STRING>,       -- platforms that touched this account in 30d
     paid_campaigns_active    ARRAY<STRING>,       -- campaign_ids currently running to this account
     last_paid_touchpoint_at  TIMESTAMP,
@@ -464,7 +464,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.target_account_activity`
     last_attribution_run_id     STRING,
 
     -- Audience suppression
-    is_suppressed_tofu       BOOL      DEFAULT FALSE,  -- suppressed from top-of-funnel
+    is_suppressed_tofu       BOOL,  -- suppressed from top-of-funnel
     suppression_platforms    ARRAY<STRING>,      -- which platforms the suppression is active on
     suppression_reason       STRING,             -- "open_opportunity" | "customer" | "competitor"
     suppression_applied_at   TIMESTAMP,
@@ -473,7 +473,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.target_account_activity`
     intent_score_today       FLOAT64,            -- 0–100 (recency + frequency + depth + content)
     intent_score_7d_avg      FLOAT64,
     intent_score_30d_avg     FLOAT64,
-    intent_spiking           BOOL      DEFAULT FALSE,
+    intent_spiking           BOOL,
     -- intent_spiking = intent_score_today > (intent_score_30d_avg * 1.5)
     -- Spike threshold: 50% above 30-day average
 
@@ -486,7 +486,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.target_account_activity`
     -- 0.25 per flag: web + crm + paid + identified = 1.0 (full coverage)
 
     -- Audit
-    generated_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP(),
+    generated_at             TIMESTAMP NOT NULL,
     generated_by             STRING               -- "analyst_agent" | "scheduled_job"
 )
 PARTITION BY date

@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.causal_impact_runs`
     -- ["LocalLinearTrend", "Seasonal(7)", "LinearRegression(meta,linkedin)"]
     control_series_names     JSON,                -- list of control channel/series names used
     n_control_series         INT64,               -- K — number of control covariates
-    zero_smoothing_applied   BOOL DEFAULT FALSE,  -- whether rolling-mean smoothing was applied
+    zero_smoothing_applied   BOOL,  -- whether rolling-mean smoothing was applied
 
     -- ── MCMC configuration ────────────────────────────────────────────────────
     n_draws                  INT64,               -- post-warmup HMC draws per chain
@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.causal_impact_runs`
     -- ── Analyst context ───────────────────────────────────────────────────────
     analyst_notes            STRING,              -- free-form context or caveats
     created_by               STRING,              -- "analyst_agent" or analyst name
-    created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP()
+    created_at               TIMESTAMP NOT NULL
 )
 PARTITION BY DATE(created_at)
 CLUSTER BY target_channel, target_metric
@@ -176,7 +176,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.causal_impact_metrics`
     counterfactual_ci_width  FLOAT64,             -- counterfactual_upper_90 - counterfactual_lower_90
 
     -- ── Audit ─────────────────────────────────────────────────────────────────
-    created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP()
+    created_at               TIMESTAMP NOT NULL
 )
 PARTITION BY DATE(created_at)
 CLUSTER BY run_id, period_type

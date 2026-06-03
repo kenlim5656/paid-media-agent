@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.platform_campaigns`
 
     -- Budget
     budget_amount            FLOAT64,
-    budget_currency          STRING    DEFAULT 'USD',
+    budget_currency          STRING,
     budget_type              STRING,              -- "daily" | "lifetime" | "monthly"
     daily_budget             FLOAT64,             -- normalized to daily equivalent
 
@@ -80,12 +80,12 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.platform_campaigns`
     product_line             STRING,
 
     -- Tracking
-    has_utm_tracking         BOOL      DEFAULT FALSE,
+    has_utm_tracking         BOOL,
     utm_source               STRING,
     utm_medium               STRING,
     utm_campaign             STRING,
-    has_click_id_capture     BOOL      DEFAULT FALSE,
-    has_capi                 BOOL      DEFAULT FALSE,
+    has_click_id_capture     BOOL,
+    has_capi                 BOOL,
 
     -- Platform-specific fields (extensible, non-breaking)
     platform_data            JSON,
@@ -97,8 +97,8 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.platform_campaigns`
 
     -- Audit
     first_seen_at            TIMESTAMP,
-    last_synced_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP(),
-    ingested_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP()
+    last_synced_at           TIMESTAMP NOT NULL,
+    ingested_at              TIMESTAMP NOT NULL
 )
 PARTITION BY DATE(ingested_at)
 CLUSTER BY platform, status, team_id
@@ -142,7 +142,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.platform_ad_groups`
     platform_data            JSON,
 
     -- Audit
-    last_synced_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP()
+    last_synced_at           TIMESTAMP NOT NULL
 )
 PARTITION BY DATE(last_synced_at)
 CLUSTER BY campaign_id, platform
@@ -184,7 +184,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.platform_ads`
     -- Platform-specific
     platform_data            JSON,
 
-    last_synced_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP()
+    last_synced_at           TIMESTAMP NOT NULL
 )
 PARTITION BY DATE(last_synced_at)
 CLUSTER BY campaign_id, ad_group_id
@@ -209,13 +209,13 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.platform_daily_spend`
 
     -- Core spend & volume (every platform)
     spend                    NUMERIC   NOT NULL,  -- use NUMERIC (not FLOAT64) to avoid rounding errors
-    currency                 STRING    DEFAULT 'USD',
+    currency                 STRING,
     impressions              INT64,
     clicks                   INT64,
     reach                    INT64,              -- unique users reached (where available)
 
     -- Engagement
-    video_views              INT64,              -- platform's default view threshold
+    video_views              INT64,              -- platform's
     video_views_25pct        INT64,
     video_views_50pct        INT64,
     video_views_75pct        INT64,
@@ -259,7 +259,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.platform_daily_spend`
     -- dv360:       {"viewability_rate": 0.71, "begin_to_render_rate": 0.88, "active_view_rate": 0.64}
 
     -- Audit
-    ingested_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP(),
+    ingested_at              TIMESTAMP NOT NULL,
     data_source              STRING               -- "platform_api" | "bigquery_export" | "manual_import"
 )
 PARTITION BY date
@@ -284,7 +284,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.platform_daily_spend_ad_group`
     platform_ad_group_id     STRING    NOT NULL,
 
     spend                    FLOAT64   NOT NULL,
-    currency                 STRING    DEFAULT 'USD',
+    currency                 STRING,
     impressions              INT64,
     clicks                   INT64,
     video_views              INT64,
@@ -299,7 +299,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.platform_daily_spend_ad_group`
 
     platform_metrics         JSON,
 
-    ingested_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP(),
+    ingested_at              TIMESTAMP NOT NULL,
     data_source              STRING
 )
 PARTITION BY date

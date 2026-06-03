@@ -68,7 +68,7 @@
 --   clicks              INT64      — link / headline clicks
 --   platform_conversions NUMERIC   — platform's own conversion count (pixel / click attribution)
 --
--- IMPORTANT: platform_conversions uses each platform's default attribution window.
+-- IMPORTANT: platform_conversions uses each platform's
 -- Do NOT use this column for cross-channel conversion totals — use
 -- attribution_results (MTA) or v_reporting_campaign_roi for deduped numbers.
 -- =============================================================================
@@ -112,15 +112,7 @@ FROM `{project}.{dataset}.reddit_daily_spend` r
 GROUP BY
     r.date,
     r.account_id,
-    r.campaign_id
-
-OPTIONS (
-    description = "Unified daily spend view across all active paid channels at campaign grain. "
-                  "Merges platform_daily_spend (Meta, Google Ads, TikTok, …) with reddit_daily_spend "
-                  "via UNION ALL. NUMERIC for all monetary fields. "
-                  "Use platform_conversions for in-platform reference only; "
-                  "use attribution_results for cross-channel deduped conversion counts."
-);
+    r.campaign_id;
 
 
 -- =============================================================================
@@ -212,15 +204,7 @@ SELECT
     COALESCE(r.clicks, 0)                                   AS clicks,
     CAST(COALESCE(r.conversions, 0) AS NUMERIC)             AS conversions
 FROM `{project}.{dataset}.reddit_spatial_performance` r
-WHERE (r.spend > 0 OR r.impressions > 0)   -- zero-inflation guard
-
-OPTIONS (
-    description = "Unified geographic performance view across all active channels. "
-                  "Combines platform_daily_spend geo columns (Meta/Google Ads/TikTok, daily grain) "
-                  "with reddit_spatial_performance (aggregate date-range grain). "
-                  "Zero-inflation guard: only rows with spend > 0 OR impressions > 0. "
-                  "country_code = ISO 3166-1 alpha-2. dma_region = US DMA code/name."
-);
+WHERE (r.spend > 0 OR r.impressions > 0)   -- zero-inflation guard;
 
 
 -- =============================================================================
@@ -534,16 +518,7 @@ FROM campaign_spend sp
 LEFT JOIN campaign_meta meta    ON sp.campaign_id = meta.campaign_id
 LEFT JOIN campaign_traffic tr   ON LOWER(TRIM(meta.utm_campaign)) = tr.utm_campaign_key
 LEFT JOIN campaign_revenue rev  ON LOWER(TRIM(meta.utm_campaign)) = rev.utm_campaign_key
-LEFT JOIN mta_by_campaign mta   ON sp.campaign_id = mta.campaign_id
-
-OPTIONS (
-    description = "3-tier campaign ROI and CPA view. "
-                  "Layer 1 (Platform): spend / platform_conversions — in-platform reference only. "
-                  "Layer 2 (Traffic): spend / paid_sessions — GA4 sessions linked via utm_campaign. "
-                  "Layer 3 (Revenue): spend / crm_leads / mqls / closed_won — CRM pipeline via ga4_client_id. "
-                  "MTA attribution from latest completed attribution_runs run. "
-                  "Customize MQL detection: LOWER(pipeline_stage) LIKE '%mql%'."
-);
+LEFT JOIN mta_by_campaign mta   ON sp.campaign_id = mta.campaign_id;
 
 
 -- =============================================================================
@@ -850,13 +825,4 @@ SELECT
         ) * 100.0 AS FLOAT64
     )                                                       AS spend_mom_delta_pct
 
-FROM raw_pacing rp
-
-OPTIONS (
-    description = "Month-to-date (MTD) budget pacing view for all active campaigns. "
-                  "Outputs recommended_daily_run_rate_usd to prevent early budget exhaustion. "
-                  "monthly_cap_usd normalized across budget_type: monthly / daily × days / lifetime pro-rate. "
-                  "Pacing thresholds: over_pacing > 110%, on_pace 90–110%, under_pacing < 90%. "
-                  "Use projected_month_end_spend_usd and projected_on_monthly_budget for budget calls. "
-                  "See v_pacing_status (06_reporting.sql) for full-flight lifetime budget pacing."
-);
+FROM raw_pacing rp;

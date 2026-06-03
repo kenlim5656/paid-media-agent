@@ -135,14 +135,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.data_attribution_anomalies`
     detected_timestamp        TIMESTAMP NOT NULL,
 )
 PARTITION BY DATE(detected_timestamp)
-CLUSTER BY flagged_platform, anomaly_type_enum, geo_country_code
-OPTIONS (
-    description = "Attribution anomaly audit log. "
-                  "Written by tools/attribution_verifier.py AttributionVerifier.run_audit(). "
-                  "Three anomaly types: orphaned_token, timestamp_divergence, phantom_conversion. "
-                  "Aggregated by v_attribution_correction_weights for MMM calibration. "
-                  "No raw PII — crm_lead_id is an opaque system record ID."
-);
+CLUSTER BY flagged_platform, anomaly_type_enum, geo_country_code;
 
 
 -- =============================================================================
@@ -316,11 +309,4 @@ FROM anomaly_weekly a
 LEFT JOIN platform_weekly p
        ON p.channel         = a.channel
       AND p.geo_country_code = a.geo_country_code
-      AND p.week_start       = a.week_start
-OPTIONS (
-    description = "Attribution correction multipliers by channel / geo / ISO week. "
-                  "Aggregates data_attribution_anomalies (rolling 90-day window, deduped). "
-                  "correction_multiplier in [0.60, 1.0] — apply to KPI tensor before MMM. "
-                  "quality_tier: clean / degraded / contaminated. "
-                  "Consumed by tools/meridian_data_loader.load_attribution_correction_weights()."
-);
+      AND p.week_start       = a.week_start;

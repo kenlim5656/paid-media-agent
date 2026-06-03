@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.sessions`
     region              STRING,
 
     -- Audit
-    ingested_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP()
+    ingested_at         TIMESTAMP NOT NULL
 )
 PARTITION BY DATE(session_start_at)
 CLUSTER BY entity_id, ga4_client_id, session_source
@@ -154,7 +154,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.touchpoint_events`
     path_total_touches  INT64,              -- total touches in this path
 
     -- Audit
-    ingested_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP(),
+    ingested_at         TIMESTAMP NOT NULL,
     source_system       STRING               -- "capi" | "cm360_data_transfer" | "ga4_export" | "platform_api"
 )
 PARTITION BY DATE(touchpoint_at)
@@ -187,12 +187,12 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.conversion_events`
 
     -- Value
     conversion_value    FLOAT64,             -- monetary value at time of conversion
-    currency            STRING    DEFAULT 'USD',
-    is_primary          BOOL      DEFAULT TRUE,  -- primary vs. micro/secondary conversion
+    currency            STRING,
+    is_primary          BOOL,  -- primary vs. micro/secondary conversion
 
     -- Deduplication
     transaction_id      STRING,              -- order ID, opportunity ID, etc. for dedup
-    is_deduplicated     BOOL      DEFAULT FALSE,
+    is_deduplicated     BOOL,
     dedup_source        STRING,              -- which system is the dedup authority
 
     -- B2B pipeline context
@@ -208,7 +208,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.conversion_events`
     platform_conversion_name STRING,
 
     -- Audit
-    ingested_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP(),
+    ingested_at         TIMESTAMP NOT NULL,
     source_system       STRING               -- "crm" | "ga4" | "capi" | "platform_api" | "manual"
 )
 PARTITION BY DATE(converted_at)

@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.incrementality_experiments`
     control_sample_size      INT64,               -- planned control group size
 
     -- ── Status ────────────────────────────────────────────────────────────────
-    status                   STRING    NOT NULL DEFAULT 'designed',
+    status                   STRING    NOT NULL,
     -- "designed"     — planned, not yet started
     -- "running"      — test is live
     -- "completed"    — test ended, results computed
@@ -103,8 +103,8 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.incrementality_experiments`
     -- ── Audit ─────────────────────────────────────────────────────────────────
     created_by               STRING,              -- "analyst_agent" or analyst name
     notes                    STRING,              -- free-form notes about design decisions
-    created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP(),
-    updated_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP()
+    created_at               TIMESTAMP NOT NULL,
+    updated_at               TIMESTAMP NOT NULL
 )
 PARTITION BY DATE(created_at)
 CLUSTER BY channel, methodology
@@ -130,7 +130,7 @@ OPTIONS (
 --   E[ROI] ≈ exp(roi_prior_mu + roi_prior_sigma² / 2)
 --
 --   For calibrated channels:   roi_prior_sigma ≈ 0.10–0.25  (tight)
---   For uncalibrated channels: roi_prior_sigma = 0.9         (weak, default)
+--   For uncalibrated channels: roi_prior_sigma = 0.9         (weak,)
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS `{project}.{dataset}.incrementality_lift_results`
 (
@@ -182,7 +182,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.incrementality_lift_results`
 
     -- ── Bayesian prior parameters for Meridian (Task 27) ──────────────────────
     -- Computed via log-normal Bayesian update from the experimental likelihood.
-    -- Log-normal conjugate update: combines weak default prior (mu=0.2, sigma=0.9)
+    -- Log-normal conjugate update: combines weak, sigma=0.9)
     -- with the experimental likelihood (log(iROAS_mean), se_log_iroas) to produce
     -- a tighter posterior suitable for Meridian's MCMC prior specification.
     --
@@ -195,16 +195,16 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.incrementality_lift_results`
     -- is_active controls whether this result is used for Meridian calibration.
     -- Only one result should be active per channel at a time.
     -- The analyst agent sets is_active=TRUE when calling run_incrementality_analysis
-    -- with mark_active=True (default). Old results are not deactivated automatically;
+    -- with mark_active=True (). Old results are not deactivated automatically;
     -- the v_incrementality_roi_priors view uses QUALIFY to pick the latest.
-    is_active                BOOL      NOT NULL DEFAULT TRUE,
+    is_active                BOOL      NOT NULL,
 
     -- ── Metadata ──────────────────────────────────────────────────────────────
     notes                    STRING,              -- analyst notes, caveats, limitations
     created_by               STRING,              -- "analyst_agent" or analyst name
-    created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP()
+    created_at               TIMESTAMP NOT NULL
 )
-PARTITION BY DATE(measurement_date)
+PARTITION BY measurement_date
 CLUSTER BY channel, experiment_id
 OPTIONS (
     description = "Incrementality lift results. One row per analysis per experiment. roi_prior_mu/sigma feed Meridian's Bayesian calibration via v_incrementality_roi_priors."
@@ -228,7 +228,7 @@ OPTIONS (
 --   source (experiment_id)        → written to mmm_channel_contributions.roi_prior_source
 --
 -- If a channel has no active significant results, it is absent from this view.
--- Absent channels receive the weak default prior (mu=0.2, sigma=0.9) in Meridian.
+-- Absent channels receive the weak, sigma=0.9) in Meridian.
 -- =============================================================================
 CREATE OR REPLACE VIEW `{project}.{dataset}.v_incrementality_roi_priors` AS
 

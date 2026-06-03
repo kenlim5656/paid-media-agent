@@ -54,7 +54,7 @@
 CREATE TABLE IF NOT EXISTS `{project}.{dataset}.mmm_runs`
 (
     run_id                   STRING    NOT NULL,  -- UUID, matches artifact directory name
-    run_started_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP(),
+    run_started_at           TIMESTAMP NOT NULL,
     status                   STRING    NOT NULL,
     -- "completed"    successful run with posterior samples
     -- "failed"       exception during sampling (check Cloud Logging)
@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.mmm_runs`
 
     -- ── Bayesian calibration (Task 22 hook) ──────────────────────────────────
     -- Records which channels had experimentally-measured ROI priors injected.
-    -- NULL = all channels used weak default priors (no incrementality data yet).
+    -- NULL = all channels used weak).
     -- After Task 22: this JSON will contain the experiment IDs and iROAS estimates
     -- that were used to calibrate the priors for this run.
     roi_priors_used          JSON,
@@ -106,7 +106,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.mmm_runs`
     media_zero_pct           FLOAT64,             -- % of [geo×week×channel] cells with 0 impressions
 
     -- ── Audit ─────────────────────────────────────────────────────────────────
-    created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP()
+    created_at               TIMESTAMP NOT NULL
 )
 PARTITION BY DATE(run_started_at)
 CLUSTER BY status
@@ -155,14 +155,14 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.mmm_channel_contributions`
 
     -- ── Task 22 calibration traceability ─────────────────────────────────────
     -- Flags whether this channel's ROI prior was calibrated from an incrementality
-    -- experiment (Task 22) or is using the default weakly informative prior.
-    roi_prior_injected       BOOL      DEFAULT FALSE,
+    -- experiment (Task 22) or is using the
+    roi_prior_injected       BOOL,
     roi_prior_source         STRING,              -- experiment/test ID from incrementality_lift_results
-    roi_prior_mu             FLOAT64,             -- the mu value injected (NULL if default prior)
-    roi_prior_sigma          FLOAT64,             -- the sigma value injected (NULL if default prior)
+    roi_prior_mu             FLOAT64,             -- the mu value injected (NULL if)
+    roi_prior_sigma          FLOAT64,             -- the sigma value injected (NULL if)
 
     -- ── Audit ─────────────────────────────────────────────────────────────────
-    created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP()
+    created_at               TIMESTAMP NOT NULL
 )
 PARTITION BY DATE(created_at)
 CLUSTER BY run_id, channel

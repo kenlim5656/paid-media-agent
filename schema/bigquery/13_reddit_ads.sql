@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.reddit_ads_runs`
 
     -- ── Audit ─────────────────────────────────────────────────────────────────
     created_by              STRING,              -- "operator_agent" or caller identifier
-    created_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP()
+    created_at              TIMESTAMP NOT NULL
 )
 PARTITION BY DATE(created_at)
 CLUSTER BY status
@@ -128,7 +128,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.reddit_daily_spend`
     -- ── Volume metrics (INT64) ─────────────────────────────────────────────────
     impressions             INT64,
     clicks                  INT64,
-    conversions             INT64,               -- post-click conversions (1-day default window)
+    conversions             INT64,               -- post-click conversions (1-day)
     view_conversions        INT64,               -- post-view conversions
 
     -- ── Engagement / video metrics ─────────────────────────────────────────────
@@ -144,7 +144,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.reddit_daily_spend`
     cost_per_conversion     NUMERIC,             -- spend / conversions
 
     -- ── Audit ─────────────────────────────────────────────────────────────────
-    capture_timestamp       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP()
+    capture_timestamp       TIMESTAMP NOT NULL
 )
 PARTITION BY date
 CLUSTER BY campaign_id, ad_group_id
@@ -204,7 +204,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.reddit_spatial_performance`
     cpm                     NUMERIC,
 
     -- ── Audit ─────────────────────────────────────────────────────────────────
-    capture_timestamp       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP()
+    capture_timestamp       TIMESTAMP NOT NULL
 )
 PARTITION BY date_range_start
 CLUSTER BY country_code, campaign_id

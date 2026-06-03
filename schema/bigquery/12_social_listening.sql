@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.social_listening_runs`
 
     -- ── Audit ─────────────────────────────────────────────────────────────────
     created_by           STRING,               -- "analyst_agent" or caller identifier
-    created_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP()
+    created_at           TIMESTAMP NOT NULL
 )
 PARTITION BY DATE(created_at)
 CLUSTER BY status
@@ -133,7 +133,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.social_trend_signals`
     -- Human-readable label for the query timeframe used, e.g. "today 1-m".
 
     -- ── Audit ─────────────────────────────────────────────────────────────────
-    capture_timestamp    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP()
+    capture_timestamp    TIMESTAMP NOT NULL
 )
 PARTITION BY signal_date
 CLUSTER BY keyword_string, platform, geography_code
@@ -216,7 +216,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.social_mentions_staging`
 
     -- ── Timing ────────────────────────────────────────────────────────────────
     published_at         TIMESTAMP,            -- when the post was originally published
-    capture_timestamp    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP()
+    capture_timestamp    TIMESTAMP NOT NULL
 )
 PARTITION BY DATE(capture_timestamp)
 CLUSTER BY source_platform, community_subsegment, keyword_matched

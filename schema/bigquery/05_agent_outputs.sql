@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.watchdog_alerts`
     -- "dedup_failure"          — evidence of duplicate conversion counting
 
     severity            STRING    NOT NULL,  -- "info" | "warning" | "critical"
-    status              STRING    NOT NULL DEFAULT 'open',  -- "open" | "acknowledged" | "resolved" | "suppressed"
+    status              STRING    NOT NULL,  -- "open" | "acknowledged" | "resolved" | "suppressed"
 
     -- What broke
     affected_namespace  STRING,             -- which signal namespace (if applicable)
@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.watchdog_alerts`
     acknowledged_at     TIMESTAMP,
 
     -- Notification
-    alert_sent          BOOL      DEFAULT FALSE,
+    alert_sent          BOOL,
     alert_sent_at       TIMESTAMP,
     alert_channel       STRING,             -- "slack" | "email" | "pagerduty"
 
@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.watchdog_capture_rate_log`
 (
     log_id              STRING    NOT NULL,
     logged_at           TIMESTAMP NOT NULL,
-    measurement_window_hours INT64 NOT NULL DEFAULT 1,
+    measurement_window_hours INT64 NOT NULL,
 
     namespace_id        STRING    NOT NULL,  -- which signal was measured
     platform            STRING,
@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.watchdog_capture_rate_log`
     -- vs. baseline
     baseline_capture_rate_pct FLOAT64,      -- rolling 7-day average
     variance_from_baseline_pct FLOAT64,
-    is_anomaly          BOOL      DEFAULT FALSE,
+    is_anomaly          BOOL,
 
     run_id              STRING               -- Watchdog run ID
 )
@@ -144,18 +144,18 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.analyst_insights`
     confidence          STRING,             -- "high" | "medium" | "low"
 
     -- Action potential
-    has_recommendation  BOOL      DEFAULT FALSE,
+    has_recommendation  BOOL,
     recommendation      STRING,
     estimated_impact    STRING,             -- e.g. "~15% reduction in attributed CPA"
     priority            STRING,             -- "high" | "medium" | "low"
 
     -- Status
-    status              STRING    DEFAULT 'new',  -- "new" | "reviewed" | "actioned" | "dismissed"
+    status              STRING,  -- "new" | "reviewed" | "actioned" | "dismissed"
     reviewed_at         TIMESTAMP,
     actioned_by         STRING,
 
     -- Timing
-    generated_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP()
+    generated_at        TIMESTAMP NOT NULL
 )
 PARTITION BY DATE(generated_at)
 CLUSTER BY insight_type, priority, status
@@ -217,7 +217,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.operator_action_log`
     guardrail_notes     STRING,             -- which guardrails were checked and their results
 
     -- Human review
-    requires_approval   BOOL      NOT NULL DEFAULT TRUE,
+    requires_approval   BOOL      NOT NULL,
     approved_by         STRING,
     approved_at         TIMESTAMP,
     rejected_by         STRING,
@@ -225,7 +225,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.operator_action_log`
     rejection_reason    STRING,
 
     -- Timing
-    proposed_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP(),
+    proposed_at         TIMESTAMP NOT NULL,
     executed_at         TIMESTAMP,
     rolled_back_at      TIMESTAMP,          -- if the action was later reversed
 
@@ -264,7 +264,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.operator_pending_approvals`
     -- Timing
     proposed_at         TIMESTAMP NOT NULL,
     expires_at          TIMESTAMP,          -- auto-reject if not reviewed by this time
-    proposed_by         STRING    DEFAULT 'operator_agent'
+    proposed_by         STRING
 )
 OPTIONS (
     description = "Current pending approval queue for Operator agent actions. Surfaced to practitioners via MCP."

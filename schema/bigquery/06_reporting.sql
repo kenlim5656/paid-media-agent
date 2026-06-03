@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.platform_keywords`
     -- "negative_exact"       Negative exact -[keyword]
     -- "negative_phrase"      Negative phrase -"keyword"
     -- "negative_broad"       Negative broad -keyword
-    negative                 BOOL      DEFAULT FALSE,
+    negative                 BOOL,
 
     status                   STRING,             -- "active" | "paused" | "removed"
 
@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.platform_keywords`
 
     -- Audit
     first_seen_at            TIMESTAMP,
-    last_synced_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP()
+    last_synced_at           TIMESTAMP NOT NULL
 )
 PARTITION BY DATE(last_synced_at)
 CLUSTER BY campaign_id, ad_group_id, match_type
@@ -108,7 +108,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.platform_daily_spend_ad`
 
     -- Core metrics
     spend                    FLOAT64   NOT NULL,
-    currency                 STRING    DEFAULT 'USD',
+    currency                 STRING,
     impressions              INT64,
     clicks                   INT64,
     reach                    INT64,
@@ -147,7 +147,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.platform_daily_spend_ad`
     -- dv360:    {"viewability_rate": 0.72, "begin_to_render_rate": 0.91}
 
     -- Audit
-    ingested_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP(),
+    ingested_at              TIMESTAMP NOT NULL,
     data_source              STRING
 )
 PARTITION BY date
@@ -176,7 +176,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.platform_daily_spend_keyword`
 
     -- Row type
     row_type                 STRING    NOT NULL,
-    -- "keyword"              Aggregated by keyword (default)
+    -- "keyword"              Aggregated by keyword ()
     -- "search_term"          Individual search query that triggered the keyword
     keyword_text             STRING    NOT NULL,  -- keyword or actual search term
     match_type               STRING,
@@ -184,7 +184,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.platform_daily_spend_keyword`
 
     -- Core metrics
     spend                    FLOAT64   NOT NULL,
-    currency                 STRING    DEFAULT 'USD',
+    currency                 STRING,
     impressions              INT64,
     clicks                   INT64,
 
@@ -217,7 +217,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.platform_daily_spend_keyword`
     platform_metrics         JSON,
 
     -- Audit
-    ingested_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP(),
+    ingested_at              TIMESTAMP NOT NULL,
     data_source              STRING
 )
 PARTITION BY date
@@ -969,7 +969,7 @@ FROM `{project}.{dataset}.platform_keywords` k
 LEFT JOIN keyword_spend ks ON k.keyword_id = ks.keyword_id
 LEFT JOIN `{project}.{dataset}.platform_campaigns`  c  ON k.campaign_id = c.campaign_id
 LEFT JOIN `{project}.{dataset}.platform_ad_groups`  ag ON k.ad_group_id = ag.ad_group_id
-WHERE k.negative = FALSE;  -- exclude negative keywords from default view
+WHERE k.negative = FALSE;  -- exclude negative keywords from
 
 
 -- =============================================================================

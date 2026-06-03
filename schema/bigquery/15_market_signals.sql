@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.market_signals_runs`
     -- ── Execution metadata ────────────────────────────────────────────────────
     status                    STRING    NOT NULL,
     error_message             STRING,
-    created_by                STRING    DEFAULT 'analyst_agent',
+    created_by                STRING,
     created_at                TIMESTAMP NOT NULL,
 )
 PARTITION BY DATE(created_at)
@@ -147,7 +147,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.market_signals_staging`
     -- words (stop words excluded). Computed in Python before BQ write.
 
     -- ── Status ────────────────────────────────────────────────────────────────
-    status                    STRING    DEFAULT 'raw',
+    status                    STRING,
     -- "raw"       — freshly ingested, awaiting inference
     -- "inferred"  — competitor_messaging_vectors row written from this signal
     -- "failed"    — fetch or normalize failed; see error_message

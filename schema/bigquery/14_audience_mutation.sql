@@ -116,7 +116,7 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.audience_mutation_logs`
     status                       STRING    NOT NULL,
     error_message                STRING,
 
-    created_by                   STRING    DEFAULT 'operator_agent',
+    created_by                   STRING,
     created_at                   TIMESTAMP NOT NULL,
 )
 PARTITION BY DATE(created_at)
