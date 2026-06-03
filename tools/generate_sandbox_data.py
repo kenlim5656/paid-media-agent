@@ -245,16 +245,37 @@ def _weekday_factor(d: date) -> float:
 
 def _batch_insert(table_name: str, rows: list[dict]) -> int:
     """
-    Stream rows into BigQuery in BATCH_SIZE chunks.
-    Returns the total count inserted; logs any per-row errors.
+    Load rows into BigQuery using load jobs (not streaming API).
+    Load jobs work immediately on newly created tables and handle bulk data
+    more reliably than streaming inserts.
+    Returns the total count inserted; logs any errors.
     """
+    from google.cloud import bigquery as _bigquery
+    from config import settings as _settings
+
+    project  = _settings.gcp_project_id
+    dataset  = _settings.gcp_dataset_id
+    table_id = f"{project}.{dataset}.{table_name}"
+    client   = _bigquery.Client(project=project)
+    job_cfg  = _bigquery.LoadJobConfig(
+        write_disposition=_bigquery.WriteDisposition.WRITE_APPEND,
+        source_format=_bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+    )
+
     inserted = 0
     for i in range(0, len(rows), BATCH_SIZE):
         chunk = rows[i : i + BATCH_SIZE]
-        errs = bq.insert_rows(table_name, chunk)
-        if errs:
-            log.warning("sandbox.insert_errors", table=table_name, first_error=errs[0])
-        inserted += len(chunk)
+        try:
+            job = client.load_table_from_json(chunk, table_id, job_config=job_cfg)
+            job.result()
+            inserted += len(chunk)
+        except Exception as exc:
+            log.warning(
+                "sandbox.load_error",
+                table=table_name,
+                chunk_start=i,
+                error=str(exc)[:200],
+            )
     return inserted
 
 
@@ -320,12 +341,15 @@ def gen_platform_campaigns(now_ts: str) -> list[dict]:
     rows = []
     for c in _CAMPAIGNS:
         rows.append({
-            "campaign_id":        c["campaign_id"],
-            "campaign_name":      c["campaign_name"],
-            "platform":           c["platform"],
-            "campaign_status":    "ENABLED",
-            "campaign_objective": c["objective"],
-            "ingested_at":        now_ts,
+            "campaign_id":           c["campaign_id"],
+            "platform_campaign_id":  c["campaign_id"],   # sandbox: same ID
+            "campaign_name":         c["campaign_name"],
+            "platform":              c["platform"],
+            "status":                "ENABLED",
+            "objective":             c["objective"],
+            "channel":               c["platform"],
+            "ingested_at":           now_ts,
+            "last_synced_at":        now_ts,
         })
     return rows
 
@@ -334,6 +358,7 @@ def gen_platform_daily_spend(
     days: int,
     today: date,
     rng: random.Random,
+    now_ts: str = "",
 ) -> list[dict]:
     """
     Generate campaign × date × geo spend rows for all non-Reddit platforms.
@@ -388,13 +413,17 @@ def gen_platform_daily_spend(
                 convs = round(clicks * cfg["cvr"], 4)
 
                 rows.append({
+                    "spend_id":             _uid(),
                     "date":                 d.isoformat(),
+                    "platform":             c["platform"],
                     "campaign_id":          c["campaign_id"],
+                    "platform_campaign_id": c["campaign_id"],
                     "geo_country_code":     geo,
                     "spend":                spend,
                     "impressions":          impr,
                     "clicks":               clicks,
                     "platform_conversions": round(convs, 4),
+                    "ingested_at":          now_ts or _ts(datetime.now(tz=timezone.utc)),
                 })
     return rows
 
@@ -514,18 +543,20 @@ def gen_sessions(
             geo = "US" if d in trap_b_dates else rng.choices(_GEO_CODES, weights=_GEO_PROBS, k=1)[0]
 
             day_sessions.append({
-                "session_id":    _uid(),
-                "ga4_client_id": cid,
-                "event_date":    d.isoformat(),
-                "gclid":         None,
-                "fbclid":        None,
-                "msclkid":       None,
-                "ttclid":        None,
-                "li_fat_id":     None,
-                "utm_source":    rng.choice([None, None, "google", "bing"]),
-                "utm_medium":    rng.choice([None, None, "organic", "direct"]),
-                "utm_campaign":  None,
-                "country":       geo,
+                "session_id":       _uid(),
+                "session_source":   "ga4",
+                "session_start_at": d.isoformat() + "T00:00:00Z",
+                "ga4_client_id":    cid,
+                "gclid":            None,
+                "fbclid":           None,
+                "msclkid":          None,
+                "ttclid":           None,
+                "li_fat_id":        None,
+                "utm_source":       rng.choice([None, None, "google", "bing"]),
+                "utm_medium":       rng.choice([None, None, "organic", "direct"]),
+                "utm_campaign":     None,
+                "country":          geo,
+                "ingested_at":      _ts(datetime.now(tz=timezone.utc)),
             })
 
         # ── Paid sessions ────────────────────────────────────────────────────
@@ -538,12 +569,14 @@ def gen_sessions(
             geo      = rng.choices(_GEO_CODES, weights=_GEO_PROBS, k=1)[0]
 
             day_sessions.append({
-                "session_id":    _uid(),
-                "ga4_client_id": cid,
-                "event_date":    d.isoformat(),
+                "session_id":       _uid(),
+                "session_source":   "ga4",
+                "session_start_at": d.isoformat() + "T00:00:00Z",
+                "ga4_client_id":    cid,
                 **tokens,
                 **utms,
-                "country":       geo,
+                "country":          geo,
+                "ingested_at":      _ts(datetime.now(tz=timezone.utc)),
             })
 
         session_rows.extend(day_sessions)
@@ -584,7 +617,7 @@ def gen_crm_leads(
         if not domain:
             domain = rng.choice(companies)["domain"]
 
-        session_date = date.fromisoformat(s["event_date"])
+        session_date = date.fromisoformat(s["session_start_at"][:10])
         lead_date    = session_date + timedelta(days=rng.randint(0, 3))
         if lead_date > today:
             lead_date = today
@@ -630,7 +663,7 @@ def gen_crm_leads(
         if not domain:
             domain = rng.choice(companies)["domain"]
 
-        session_date = date.fromisoformat(s["event_date"])
+        session_date = date.fromisoformat(s["session_start_at"][:10])
         # ▸ CRM lead created 5 days AFTER the session (the overwrite delay)
         lead_date    = session_date + timedelta(days=5)
         if lead_date > today:
@@ -793,8 +826,9 @@ def gen_company_profiles(
             "enrichment_confidence": co["enrichment_confidence"],
             "icp_score":             co["icp"],
             "crm_account_owner":     co["crm_account_owner"],
-            "estimated_arr":         float(co["arr"]),
-            "ingested_at":           now_ts,
+            "annual_revenue":        float(co["arr"]),
+            "created_at":            now_ts,
+            "updated_at":            now_ts,
         })
     return rows
 
@@ -825,7 +859,7 @@ def gen_company_engagement(
         dom = ga4_to_domain.get(s["ga4_client_id"])
         if not dom:
             continue
-        event_date = date.fromisoformat(s["event_date"])
+        event_date = date.fromisoformat(s["session_start_at"][:10])
         if event_date < period_start:
             continue
         domain_sessions[dom] = domain_sessions.get(dom, 0) + 1
@@ -881,11 +915,14 @@ def gen_company_engagement(
         is_open_op = crm_stage == "opportunity"
 
         rows.append({
+            "engagement_id":          _uid(),
             "company_id":             co["company_id"],
             "company_domain":         dom,
             "company_name":           co["name"],
             "period_start":           period_start.isoformat(),
+            "period_end":             today.isoformat(),
             "period_type":            "rolling_30d",
+            "generated_at":           _ts(datetime.now(tz=timezone.utc)),
             "is_target_account":      target,
             "account_tier":           co["tier"] or "unclassified",
             "crm_pipeline_stage":     crm_stage,
@@ -902,7 +939,7 @@ def gen_company_engagement(
             "blog_sessions":          rng.randint(0, 8),
             "paid_sessions":          paid_sessions_count,
             "paid_platforms_seen":    paid_platforms,
-            "paid_campaigns_seen":    len(paid_platforms) * rng.randint(1, 3),
+            "paid_campaigns_seen":    [],   # campaign IDs not tracked at this grain in sandbox
             "intent_score":           intent_score,
             "recency_score":          round(rng.uniform(40, 95) if target else rng.uniform(10, 70), 1),
             "frequency_score":        round(n_unique_days / 30.0 * 100, 1),
@@ -930,8 +967,13 @@ def gen_target_account_activity(
         spiking = target and rng.random() < 0.25
 
         rows.append({
+            "activity_id":                 _uid(),
             "company_id":                  co["company_id"],
+            "company_domain":              co["domain"],
+            "company_name":                co["name"],
+            "account_tier":                co["tier"] or "unclassified",
             "date":                        today.isoformat(),
+            "generated_at":                _ts(datetime.now(tz=timezone.utc)),
             "intent_spiking":              spiking,
             "web_sessions_7d":             rng.randint(3, 28) if target else rng.randint(0, 8),
             "visited_pricing_today":       target and rng.random() < 0.20,
@@ -987,6 +1029,7 @@ def gen_mmm_data(
         "geo_index":        json.dumps(_GEO_CODES),
         "roi_priors_used":  True,
         "run_started_at":   _ts(started_at),
+        "created_at":       _ts(started_at),
     }
 
     total_spend = {
@@ -1004,6 +1047,7 @@ def gen_mmm_data(
         roi_p95 = cfg["roi_p95"]
 
         contrib_rows.append({
+            "contribution_id":    _uid(),
             "run_id":             run_id,
             "channel":            platform,
             "total_spend_usd":    spend,
@@ -1017,6 +1061,7 @@ def gen_mmm_data(
             "roi_prior_source":   "incrementality_experiment",
             "roi_prior_mu":       round(roi_mu,  4),
             "roi_prior_sigma":    round((roi_p95 - roi_p5) / 3.29, 4),
+            "created_at":         _ts(started_at),
         })
 
     return run_row, contrib_rows
@@ -1221,7 +1266,7 @@ def main() -> int:
     campaign_rows  = gen_platform_campaigns(now_ts)
     print(f"    platform_campaigns          {len(campaign_rows):>8,} rows")
 
-    spend_rows     = gen_platform_daily_spend(args.days, today, rng)
+    spend_rows     = gen_platform_daily_spend(args.days, today, rng, now_ts)
     print(f"    platform_daily_spend        {len(spend_rows):>8,} rows")
 
     reddit_rows    = gen_reddit_daily_spend(args.days, today, rng)
