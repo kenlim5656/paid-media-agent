@@ -347,6 +347,65 @@ class OperatorAgent(BaseAgent):
                 "required": ["platform_configs"],
             },
         },
+        {
+            "name": "execute_system_budget_reallocation",
+            "description": (
+                "Ingest a task27.v1 MMM optimization package (from run_marketing_mix_optimization) "
+                "and execute the channel budget adjustments across all configured ad platforms "
+                "(Google Ads, TikTok, Meta, LinkedIn, Reddit Ads) in a single orchestrated run.\n\n"
+                "Pre-flight guardrail checks enforced before any mutation:\n"
+                "  • operator_approval_required flag must be present and True in the package.\n"
+                "  • No individual recommended_shift_pct may exceed the package's max_shift_pct_policy (±10.0%).\n"
+                "  • new_target_budget_usd must be ≥ platform minimum floor "
+                "($5.00 Google Ads, $20.00 TikTok).\n"
+                "  • All channels in the recommendations array must be present in channel_campaign_map.\n\n"
+                "If any pre-flight check fails, NO mutations are applied and the full error list is returned.\n\n"
+                "Execution: mutations are applied sequentially (one channel at a time). Each result is "
+                "logged to operator_action_log. Returns a Markdown confirmation table tracking "
+                "transaction state (executed / failed / unsupported) per channel, plus a "
+                "structured results array for downstream audit."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "action_id": {
+                        "type": "string",
+                        "description": (
+                            "The action_id returned by log_proposed_action. "
+                            "Links this execution to the audit trail in operator_action_log "
+                            "and operator_pending_approvals."
+                        ),
+                    },
+                    "execution_package": {
+                        "type": "object",
+                        "description": (
+                            "The operator_execution_package dict returned by "
+                            "run_marketing_mix_optimization. Must contain:\n"
+                            "  schema_version: 'task27.v1'\n"
+                            "  operator_approval_required: true\n"
+                            "  max_shift_pct_policy: 10.0\n"
+                            "  mmm_run_id: string\n"
+                            "  recommendations: list of channel directives"
+                        ),
+                    },
+                    "channel_campaign_map": {
+                        "type": "object",
+                        "description": (
+                            "Maps each channel name in the recommendations array to its "
+                            "platform-specific entity IDs for the API mutation call. "
+                            "Only channels with a map entry will be executed.\n\n"
+                            "Per-channel format:\n"
+                            "  google_ads:  { customer_id: '123456789', campaign_id: '987654321' }\n"
+                            "  tiktok:      { advertiser_id: '111', campaign_id: '222' }\n"
+                            "  meta:        { campaign_id: '333444555' }\n"
+                            "  linkedin:    { advertiser_id: '456', campaign_id: '789' }\n"
+                            "  reddit_ads:  { account_id: 'a2_xxx', campaign_id: 'yyy' }"
+                        ),
+                    },
+                },
+                "required": ["action_id", "execution_package", "channel_campaign_map"],
+            },
+        },
     ]
 
     # ── Tool implementations ──────────────────────────────────────────────────
@@ -1065,6 +1124,286 @@ class OperatorAgent(BaseAgent):
             "markdown_summary": markdown_summary,
         }
 
+    # ── MMM Budget Reallocation Execution Tool ────────────────────────────────
+
+    def _tool_execute_system_budget_reallocation(
+        self,
+        action_id: str,
+        execution_package: dict,
+        channel_campaign_map: dict,
+    ) -> dict:
+        """
+        Execute a task27.v1 MMM optimization package across all configured platforms.
+
+        Orchestration sequence:
+          1. Schema version + approval flag validation.
+          2. Pre-flight guardrail sweep over all recommendations —
+             abort with full error list if any check fails (zero mutations applied).
+          3. Sequential channel execution loop — Google Ads, TikTok, Meta,
+             LinkedIn, Reddit Ads dispatched to dedicated operator mutation clients.
+          4. BQ action log update per executed channel.
+          5. Markdown confirmation log returned alongside structured results.
+        """
+        from tools.google_ads_operator import (
+            modify_google_campaign_budget,
+            GOOGLE_ADS_MIN_DAILY_BUDGET_USD,
+            GoogleAdsBudgetGuardrailError,
+            GoogleAdsAPIError,
+            GoogleAdsSetupError,
+        )
+        from tools.tiktok_ads_operator import (
+            modify_tiktok_campaign_budget,
+            TIKTOK_MIN_DAILY_BUDGET_USD,
+            TikTokBudgetGuardrailError,
+            TikTokAdsError,
+            TikTokSetupError,
+        )
+        from tools.meta_client import (
+            MetaAPIError,
+            update_campaign_daily_budget as meta_update_budget,
+        )
+        from tools.linkedin_client import (
+            LinkedInAPIError,
+            update_campaign_daily_budget as li_update_budget,
+        )
+        from tools.reddit_ads_client import (
+            RedditAdsError,
+            RedditAdsSetupError,
+            RedditAdsBudgetGuardrailError,
+            modify_reddit_campaign_budget,
+        )
+        from tools.gmp_client import ApprovalRequiredError
+
+        # ── 0. Schema version guard ───────────────────────────────────────────
+        schema_version = execution_package.get("schema_version", "")
+        if not schema_version.startswith("task27"):
+            return {
+                "action_id": action_id,
+                "executed":  False,
+                "reason": (
+                    f"Unrecognized schema_version '{schema_version}'. "
+                    "Expected 'task27.v1'. Pass the operator_execution_package "
+                    "returned directly by run_marketing_mix_optimization."
+                ),
+            }
+
+        # ── 1. Approval flag guard ────────────────────────────────────────────
+        # The flag must be True — this is a non-negotiable constraint.
+        # A package with operator_approval_required=False would bypass the human
+        # review requirement that is central to the Operator's safety model.
+        pkg_approval_flag = execution_package.get("operator_approval_required", None)
+        if pkg_approval_flag is not True:
+            return {
+                "action_id": action_id,
+                "executed":  False,
+                "reason": (
+                    f"execution_package.operator_approval_required is {pkg_approval_flag!r}. "
+                    "This field must be True for all task27.v1 packages. "
+                    "Do not modify the package before passing it to this tool."
+                ),
+            }
+
+        recommendations: list[dict] = execution_package.get("recommendations", [])
+        if not recommendations:
+            return {
+                "action_id": action_id,
+                "executed":  False,
+                "reason": "No recommendations found in execution_package.recommendations.",
+            }
+
+        max_shift_policy: float = float(
+            execution_package.get("max_shift_pct_policy", 10.0)
+        )
+        mmm_run_id: str = execution_package.get("mmm_run_id", "unknown")
+
+        # ── 2. Pre-flight guardrail sweep (all-or-nothing) ────────────────────
+        preflight_errors: list[str] = []
+
+        for rec in recommendations:
+            ch          = rec.get("channel", "unknown")
+            shift_pct   = float(rec.get("recommended_shift_pct", 0) or 0)
+            new_target  = float(rec.get("new_target_budget_usd", 0) or 0)
+            direction   = rec.get("direction", "")
+
+            # ▸ Shift ceiling
+            if abs(shift_pct) > max_shift_policy:
+                preflight_errors.append(
+                    f"[{ch}] recommended_shift_pct {shift_pct:.1f}% exceeds "
+                    f"policy ceiling {max_shift_policy:.1f}%."
+                )
+
+            # ▸ Platform floor — Google Ads ($5.00)
+            if ch == "google_ads" and new_target < GOOGLE_ADS_MIN_DAILY_BUDGET_USD:
+                preflight_errors.append(
+                    f"[google_ads] new_target_budget_usd ${new_target:.2f} is below "
+                    f"the ${GOOGLE_ADS_MIN_DAILY_BUDGET_USD:.2f} minimum floor."
+                )
+
+            # ▸ Platform floor — TikTok ($20.00)
+            if ch == "tiktok" and new_target < TIKTOK_MIN_DAILY_BUDGET_USD:
+                preflight_errors.append(
+                    f"[tiktok] new_target_budget_usd ${new_target:.2f} is below "
+                    f"the ${TIKTOK_MIN_DAILY_BUDGET_USD:.2f} minimum floor."
+                )
+
+            # ▸ Campaign map presence
+            if ch not in channel_campaign_map:
+                preflight_errors.append(
+                    f"[{ch}] not found in channel_campaign_map. "
+                    f"Add an entry with the platform-specific entity IDs for this channel."
+                )
+
+        if preflight_errors:
+            log.warning(
+                "operator.budget_reallocation.preflight_failed",
+                action_id=action_id,
+                mmm_run_id=mmm_run_id,
+                error_count=len(preflight_errors),
+                errors=preflight_errors,
+            )
+            return {
+                "action_id":        action_id,
+                "executed":         False,
+                "preflight_failed": True,
+                "error_count":      len(preflight_errors),
+                "errors":           preflight_errors,
+                "reason": (
+                    f"{len(preflight_errors)} pre-flight check(s) failed. "
+                    "Zero mutations applied — resolve all errors before retrying."
+                ),
+            }
+
+        # ── 3. Sequential execution loop ──────────────────────────────────────
+        results: list[dict] = []
+
+        for rec in recommendations:
+            ch          = rec.get("channel", "unknown")
+            direction   = rec.get("direction", "")
+            shift_pct   = float(rec.get("recommended_shift_pct", 0) or 0)
+            shift_usd   = float(rec.get("recommended_shift_usd", 0) or 0)
+            new_target  = float(rec.get("new_target_budget_usd", 0) or 0)
+            adj_roi     = rec.get("adj_roi_mean")
+            conf_tier   = rec.get("confidence_tier", "")
+            bsts_align  = rec.get("bsts_alignment", "")
+
+            platform_ids: dict = channel_campaign_map.get(ch, {})
+
+            tx: dict = {
+                "channel":                ch,
+                "direction":              direction,
+                "recommended_shift_pct":  shift_pct,
+                "recommended_shift_usd":  shift_usd,
+                "new_target_budget_usd":  new_target,
+                "adj_roi_mean":           adj_roi,
+                "confidence_tier":        conf_tier,
+                "bsts_alignment":         bsts_align,
+            }
+
+            try:
+                if ch == "google_ads":
+                    r = modify_google_campaign_budget(
+                        customer_id=platform_ids["customer_id"],
+                        campaign_id=platform_ids["campaign_id"],
+                        new_budget_usd=new_target,
+                    )
+                    tx.update({"status": "executed", "platform_response": r})
+
+                elif ch == "tiktok":
+                    r = modify_tiktok_campaign_budget(
+                        advertiser_id=platform_ids["advertiser_id"],
+                        campaign_id=platform_ids["campaign_id"],
+                        new_budget_usd=new_target,
+                    )
+                    tx.update({"status": "executed", "platform_response": r})
+
+                elif ch == "meta":
+                    # Meta budget API uses cents (int × 100)
+                    new_cents = int(round(new_target * 100))
+                    r = meta_update_budget(
+                        campaign_id=platform_ids["campaign_id"],
+                        new_daily_budget_cents=new_cents,
+                    )
+                    tx.update({"status": "executed", "platform_response": r})
+
+                elif ch == "linkedin":
+                    r = li_update_budget(
+                        campaign_id=platform_ids["campaign_id"],
+                        new_daily_budget_usd=new_target,
+                    )
+                    tx.update({"status": "executed", "platform_response": r})
+
+                elif ch == "reddit_ads":
+                    r = modify_reddit_campaign_budget(
+                        account_id=platform_ids["account_id"],
+                        campaign_id=platform_ids["campaign_id"],
+                        new_budget_usd=new_target,
+                    )
+                    tx.update({"status": "executed", "platform_response": r})
+
+                else:
+                    tx.update({
+                        "status": "unsupported",
+                        "note":   f"No budget adapter configured for channel '{ch}'.",
+                    })
+
+            except (
+                ApprovalRequiredError,
+                GoogleAdsAPIError, GoogleAdsSetupError, GoogleAdsBudgetGuardrailError,
+                TikTokAdsError, TikTokSetupError, TikTokBudgetGuardrailError,
+                RedditAdsError, RedditAdsSetupError, RedditAdsBudgetGuardrailError,
+                MetaAPIError, LinkedInAPIError,
+                KeyError, ValueError,
+            ) as exc:
+                tx.update({"status": "failed", "error": str(exc)})
+                log.error(
+                    "operator.budget_reallocation.channel_failed",
+                    channel=ch,
+                    action_id=action_id,
+                    error=str(exc),
+                )
+
+            results.append(tx)
+
+            # Update BQ action log for each successfully executed channel
+            if tx["status"] == "executed":
+                self._update_action_status(action_id, "executed")
+
+        # ── 4. Summary ────────────────────────────────────────────────────────
+        executed_count  = sum(1 for r in results if r["status"] == "executed")
+        failed_count    = sum(1 for r in results if r["status"] == "failed")
+        skipped_count   = sum(1 for r in results if r["status"] == "unsupported")
+
+        markdown_summary = _build_budget_reallocation_markdown(
+            mmm_run_id=mmm_run_id,
+            action_id=action_id,
+            results=results,
+            executed_count=executed_count,
+            failed_count=failed_count,
+            skipped_count=skipped_count,
+        )
+
+        log.info(
+            "operator.budget_reallocation.complete",
+            action_id=action_id,
+            mmm_run_id=mmm_run_id,
+            total=len(results),
+            executed=executed_count,
+            failed=failed_count,
+            skipped=skipped_count,
+        )
+
+        return {
+            "action_id":              action_id,
+            "mmm_run_id":             mmm_run_id,
+            "schema_version":         schema_version,
+            "total_recommendations":  len(results),
+            "executed":               executed_count,
+            "failed":                 failed_count,
+            "skipped":                skipped_count,
+            "results":                results,
+            "markdown_summary":       markdown_summary,
+        }
+
 
 # ── Markdown builders (module-level, pure formatting) ────────────────────────
 
@@ -1463,6 +1802,146 @@ def _build_mutation_markdown(run_label: str, result: dict) -> str:
         f"*Seed mutation executed by the Paid Media Operator Agent. "
         f"Raw contact data was SHA-256 hashed and discarded — "
         f"zero PII persisted. Logged to `audience_mutation_logs` (run_id: `{run_id}`).*",
+    ]
+
+    return "\n".join(lines)
+
+
+# ── Budget Reallocation Execution Markdown builder ────────────────────────────
+
+_DIRECTION_ICON: dict[str, str] = {
+    "increase": "⬆️",
+    "decrease": "⬇️",
+}
+
+_STATUS_ICON: dict[str, str] = {
+    "executed":    "✅",
+    "failed":      "❌",
+    "unsupported": "⚠️",
+}
+
+_CONFIDENCE_ICON: dict[str, str] = {
+    "high":   "🟢",
+    "medium": "🟡",
+    "low":    "🔴",
+    "":       "—",
+}
+
+_BSTS_ICON: dict[str, str] = {
+    "aligned":         "✅",
+    "divergent":       "⚠️",
+    "uncorroborated":  "—",
+    "":                "—",
+}
+
+
+def _build_budget_reallocation_markdown(
+    mmm_run_id: str,
+    action_id: str,
+    results: list[dict],
+    executed_count: int,
+    failed_count: int,
+    skipped_count: int,
+) -> str:
+    """
+    Render a Markdown execution confirmation log for a task27.v1 budget reallocation run.
+
+    Three sections:
+      1. Header — run metadata and overall status badge.
+      2. Transaction table — per-channel row with direction, amounts, and status.
+      3. Intelligence summary — confidence tier and BSTS alignment per channel.
+      4. Failure detail block (only if failed_count > 0).
+      5. Sequencing reminder footer.
+    """
+    total = len(results)
+    clean = failed_count == 0 and skipped_count == 0
+
+    overall_badge = (
+        "✅ Clean run — all channels executed"
+        if clean
+        else f"{'⚠️' if failed_count > 0 else '📋'} "
+             f"{executed_count}/{total} executed"
+             + (f" · {failed_count} failed" if failed_count else "")
+             + (f" · {skipped_count} unsupported" if skipped_count else "")
+    )
+
+    lines: list[str] = [
+        "## 🤖 Budget Reallocation Execution Log",
+        "",
+        f"| Field | Value |",
+        f"|-------|-------|",
+        f"| MMM Run ID | `{mmm_run_id}` |",
+        f"| Action ID | `{action_id}` |",
+        f"| Channels processed | {total} |",
+        f"| Overall status | {overall_badge} |",
+        "",
+        "---",
+        "",
+        "### Transaction Summary",
+        "",
+        "| Channel | Direction | Shift % | Shift USD | New Budget | Status |",
+        "|---------|-----------|--------:|----------:|-----------:|--------|",
+    ]
+
+    for r in results:
+        ch      = r.get("channel", "?")
+        dirn    = r.get("direction", "")
+        s_pct   = r.get("recommended_shift_pct", 0.0)
+        s_usd   = r.get("recommended_shift_usd", 0.0)
+        new_b   = r.get("new_target_budget_usd", 0.0)
+        status  = r.get("status", "?")
+
+        dir_cell    = f"{_DIRECTION_ICON.get(dirn, '')} {dirn}"
+        status_icon = _STATUS_ICON.get(status, "?")
+        error_snip  = f": {r['error'][:55]}…" if status == "failed" and r.get("error") else ""
+        status_cell = f"{status_icon} {status}{error_snip}"
+
+        lines.append(
+            f"| {ch} | {dir_cell} | {s_pct:.1f}% | ${s_usd:,.0f} | ${new_b:,.0f} | {status_cell} |"
+        )
+
+    lines += [
+        "",
+        "---",
+        "",
+        "### Measurement Intelligence",
+        "",
+        "| Channel | Adj-ROI | Confidence | BSTS Alignment |",
+        "|---------|--------:|-----------|----------------|",
+    ]
+
+    for r in results:
+        ch        = r.get("channel", "?")
+        adj_roi   = r.get("adj_roi_mean")
+        conf      = r.get("confidence_tier", "")
+        bsts      = r.get("bsts_alignment", "")
+
+        roi_cell  = f"{adj_roi:.2f}x" if adj_roi is not None else "—"
+        conf_cell = f"{_CONFIDENCE_ICON.get(conf, '?')} {conf}" if conf else "—"
+        bsts_cell = f"{_BSTS_ICON.get(bsts, '?')} {bsts}" if bsts else "—"
+
+        lines.append(f"| {ch} | {roi_cell} | {conf_cell} | {bsts_cell} |")
+
+    lines.append("")
+
+    # ── Failure detail block ──────────────────────────────────────────────────
+    if failed_count > 0:
+        lines += ["---", "", "### ❌ Failure Details", ""]
+        for r in results:
+            if r.get("status") == "failed":
+                lines.append(f"- **{r.get('channel', '?')}:** {r.get('error', 'Unknown error')}")
+        lines.append("")
+
+    # ── Sequencing reminder footer ────────────────────────────────────────────
+    lines += [
+        "---",
+        "",
+        "> **Sequencing rule (Meridian Framework 3b):** Monitor performance for "
+        "2–4 weeks before approving a second channel increase. Simultaneous "
+        "multi-channel shifts increase attribution complexity and compound error risk.",
+        ">",
+        "> All executed changes are live in the respective ad platforms. "
+        f"Results logged to `operator_action_log` under action ID `{action_id}`.",
     ]
 
     return "\n".join(lines)
