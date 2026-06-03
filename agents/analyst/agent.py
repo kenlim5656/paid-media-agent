@@ -747,6 +747,63 @@ class AnalystAgent(BaseAgent):
             },
         },
         {
+            "name": "get_abm_intent_signals",
+            "description": (
+                "Surface account-based marketing (ABM) intent signals from de-anonymized "
+                "web analytics. Identifies which corporate accounts are actively researching "
+                "your product, scores their purchase intent, and classifies them into three "
+                "actionable intelligence tiers:\n\n"
+                "  🚀 High Intent Surge — multiple cross-channel visits on pricing/demo/contact "
+                "pages within a tight 72-hour window. Immediate SDR or AE escalation.\n"
+                "  🔍 Early Discovery — consistent top-of-funnel exploration from an ICP-fit "
+                "domain. Recommend nurture content and retargeting sequences.\n"
+                "  ⚠️  ICP Boundary Breakers — highly engaged accounts NOT in the current ABM "
+                "target list. Represents ICP miss candidates the sales team should evaluate.\n\n"
+                "Data sources: company_engagement (rolling_30d aggregates), company_profiles "
+                "(firmographics + ICP scores), target_account_activity (latest daily snapshot).\n\n"
+                "Account Surge Score (0–100):\n"
+                "  40% base intent · 20% session velocity · 25% high-intent page depth · "
+                "15% multi-channel paid exposure\n\n"
+                "Evaluation context: if agents/analyst/skills/private_account_intent.md is "
+                "present, applies extended ABM heuristics (Account Inversion, Buying Committee "
+                "Signature detection, Static ICP Miss analysis). Falls back to public framework.\n\n"
+                "Requires: company_engagement populated (run enrich_sessions first). "
+                "Privacy guarantee: returns company_domain only — no raw IP addresses or PII."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "lookback_days": {
+                        "type": "integer",
+                        "default": 30,
+                        "description": (
+                            "Days of engagement history to include (default 30). "
+                            "Use 7 for sharp recency focus (recent surges only). "
+                            "Use 60–90 for longer-cycle B2B buying journeys."
+                        ),
+                    },
+                    "min_page_views": {
+                        "type": "integer",
+                        "default": 3,
+                        "description": (
+                            "Minimum total sessions to include an account (default 3). "
+                            "Filters single-visit bots and low-signal noise. "
+                            "Increase to 5–10 to see only consistently engaged accounts."
+                        ),
+                    },
+                    "target_industry": {
+                        "type": "string",
+                        "description": (
+                            "Optional industry substring filter (case-insensitive LIKE match). "
+                            "Examples: 'Software', 'Financial Services', 'Healthcare'. "
+                            "Omit to see all industries."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+        {
             "name": "audit_data_attribution_cleanliness",
             "description": (
                 "Run the Attribution Forensic Verification Engine to detect CRM data overwrites, "
@@ -2300,6 +2357,48 @@ class AnalystAgent(BaseAgent):
             "mmm_note":         mmm_note,
             "bq_views_updated": ["v_attribution_correction_weights"],
         }
+
+    def _tool_get_abm_intent_signals(
+        self,
+        lookback_days: int = 30,
+        min_page_views: int = 3,
+        target_industry: str | None = None,
+    ) -> dict:
+        """
+        Surface ABM intent signals from de-anonymized account engagement data.
+
+        Delegates to AccountAnalyticsInspector which:
+          1. Queries company_engagement (rolling_30d) + company_profiles
+             + target_account_activity (latest daily snapshot)
+          2. Filters noise (excluded tiers, low-confidence enrichments, freemail domains)
+          3. Computes Account Surge Score (0–100) per company:
+               40% base intent · 20% session velocity
+               25% high-intent page depth · 15% multi-channel paid exposure
+          4. Classifies accounts into three intelligence tiers:
+               🚀 High Intent Surge   — surge ≥ 65 + bottom-funnel page visits
+               🔍 Early Discovery     — target/ICP-fit account, surge 30–64
+               ⚠️  ICP Boundary Breakers — surge ≥ 45, NOT in target account list
+          5. Resolves evaluation prompt via SkillResolver
+             (private_account_intent.md → extended ABM heuristics if present;
+              public fallback otherwise)
+          6. Formats a Markdown intelligence brief with per-tier blockquote sections
+
+        Returns:
+            markdown_brief      — formatted brief for direct display
+            accounts            — enriched account rows with surge_score + intelligence_tier
+            tier_summary        — {tier_name: int count}
+            evaluation_context  — resolved SkillResolver prompt (framing for interpretation)
+            prompt_source       — "private" | "public_fallback"
+            params              — echoed input parameters
+            status              — "ok" | "no_data" | "bq_error"
+        """
+        from tools.account_analytics_inspector import AccountAnalyticsInspector
+        inspector = AccountAnalyticsInspector()
+        return inspector.get_intent_signals(
+            lookback_days=int(lookback_days),
+            min_page_views=int(min_page_views),
+            target_industry=target_industry or None,
+        )
 
 
 # ── Market Signals Markdown builder (module-level, pure formatting) ────────────
