@@ -747,6 +747,67 @@ class AnalystAgent(BaseAgent):
             },
         },
         {
+            "name": "run_marketing_mix_optimization",
+            "description": (
+                "Read pre-computed Google Meridian MMM posterior summaries from BigQuery "
+                "and generate an actionable media-mix optimization brief with Operator-ready "
+                "budget reallocation directives. This tool is the optimization analysis layer "
+                "on top of run_mmm_model — it does NOT run JAX/NumPyro MCMC inline.\n\n"
+                "Pipeline (no JAX blocking):\n"
+                "  1. Load latest completed MMM run from mmm_runs + mmm_channel_contributions\n"
+                "  2. Load Task 37 attribution correction weights → adjust ROI estimates\n"
+                "  3. Load Task 24 BSTS causal impact results → counterfactual audit\n"
+                "  4. Compute optimal spend allocation via portfolio-weighted Dorfman gradient\n"
+                "     (capped at MAX_BUDGET_SHIFT_PCT=10% per channel per security policy)\n"
+                "  5. Resolve SkillResolver prompt (private_meridian_priors.md if present)\n"
+                "  6. Format Markdown allocation package (3 sections below)\n"
+                "  7. Emit Operator execution JSON payload\n\n"
+                "Output sections:\n"
+                "  📊 Model Convergence Metrics — R-hat, ESS, divergences, sampling time\n"
+                "  📈 Channel Marginal Return Saturation — spend vs adj-ROI vs correction\n"
+                "  🤖 Operator Execution Instructions — budget shift JSON payload\n\n"
+                "IMPORTANT: Call run_mmm_model first if no recent MMM run exists. "
+                "Sampling takes 35–45 min on Cloud Run; after completion, call this tool "
+                "to get the optimization brief without re-running the model.\n\n"
+                "Budget optimization method: Dorfman gradient — channels above portfolio-avg "
+                "adjusted ROI receive an increase signal; channels below receive a decrease "
+                "signal. All shifts ≤10% and require explicit Operator approval."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "historical_lookback_days": {
+                        "type": "integer",
+                        "default": 365,
+                        "description": (
+                            "Days to look back for a qualifying completed MMM run "
+                            "(default 365). Increase if you want to analyze an older run."
+                        ),
+                    },
+                    "geo_focus": {
+                        "type": "string",
+                        "default": "US",
+                        "description": (
+                            "Geo label for the brief header (informational). "
+                            "Geo-level breakdown is encoded in the model tensor, "
+                            "not filtered here. Examples: 'US', 'EMEA', 'Global'."
+                        ),
+                    },
+                    "run_diagnostic_mode": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "If True, also queries platform_daily_spend to assess "
+                            "data loader readiness for a fresh MMM run — useful for "
+                            "determining whether sufficient data exists before triggering "
+                            "another expensive MCMC sampling cycle."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+        {
             "name": "get_abm_intent_signals",
             "description": (
                 "Surface account-based marketing (ABM) intent signals from de-anonymized "
@@ -2357,6 +2418,49 @@ class AnalystAgent(BaseAgent):
             "mmm_note":         mmm_note,
             "bq_views_updated": ["v_attribution_correction_weights"],
         }
+
+    def _tool_run_marketing_mix_optimization(
+        self,
+        historical_lookback_days: int = 365,
+        geo_focus: str = "US",
+        run_diagnostic_mode: bool = False,
+    ) -> dict:
+        """
+        Meridian MMM skill wrapper — optimization analysis layer (Task 27).
+
+        Reads pre-computed posterior summaries from BigQuery (NO JAX execution inline).
+        Delegates to MMMOptimizerAnalyst which:
+          1. Loads latest mmm_runs + mmm_channel_contributions (lookback window)
+          2. Loads Task 37 attribution correction weights → adjusts ROI estimates
+          3. Loads Task 24 BSTS causal impact results → counterfactual cross-reference
+          4. Computes Dorfman gradient budget optimization:
+               adj_roi = roi_mean × correction_multiplier
+               shift_pct = clamp((adj_roi − avg_roi)/avg_roi × 50%, ±10%)
+          5. Resolves SkillResolver prompt:
+               private_meridian_priors.md → channel alpha/beta priors,
+               counterfactual audit, reallocation vector heuristics (if present)
+               falls back to public evaluation framework otherwise
+          6. Formats 3-section Markdown allocation brief
+          7. Emits machine-readable Operator execution JSON payload
+
+        Returns:
+            status                    — "ok" | "no_model_found" | "bq_error"
+            markdown_brief            — formatted 3-section Markdown brief
+            operator_execution_package — budget shift JSON payload for Operator
+            mmm_run_id                — analyzed run's ID
+            r_hat_max                 — convergence quality metric
+            n_active_recommendations  — number of shift directives generated
+            allocation                — per-channel dicts with shift calcs
+            evaluation_context        — resolved SkillResolver prompt
+            prompt_source             — "private" | "public_fallback"
+        """
+        from tools.mmm_optimizer_analyst import MMMOptimizerAnalyst
+        optimizer = MMMOptimizerAnalyst()
+        return optimizer.run_optimization(
+            historical_lookback_days=int(historical_lookback_days),
+            geo_focus=str(geo_focus),
+            run_diagnostic_mode=bool(run_diagnostic_mode),
+        )
 
     def _tool_get_abm_intent_signals(
         self,
