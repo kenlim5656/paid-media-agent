@@ -865,6 +865,98 @@ class AnalystAgent(BaseAgent):
             },
         },
         {
+            "name": "evaluate_adstock_decay_pacing",
+            "description": (
+                "Analyze the geometric adstock carry-over (halo effect) of historical media spend, "
+                "measure downstream organic/direct traffic decay following spend surges, and generate "
+                "a programmatic 14-day flighting schedule with cool-down gates and floor enforcement.\n\n"
+                "Data sources:\n"
+                "  platform_daily_spend — daily spend per channel for adstock series computation\n"
+                "  sessions — daily organic/direct session volume for carry-over correlation\n"
+                "  mmm_channel_contributions — ROI posteriors for halo weighting context\n\n"
+                "Outputs (controlled by execution_mode):\n"
+                "  📊 Adstock Halo Matrix — per-channel: λ, half-life days, current residual %, "
+                "implied spend equivalent still working in-market, status badge\n"
+                "  🗓️ Flighting Schedule — 14-day forward plan: PULSE_ON / PULSE_OFF / COOL_DOWN / HOLD "
+                "with budget % and floor enforcement warnings\n"
+                "  Organic anomaly flag — detects organic session surges not correlated with paid spend "
+                "(external events vs adstock carry-over)\n"
+                "  operator_vector — JSON instruction list for Operator agent\n\n"
+                "execution_mode values:\n"
+                "  'analyze'    — halo matrix only\n"
+                "  'flight_plan' — flighting schedule only\n"
+                "  'full'       — both (default)\n\n"
+                "Routing: Uses SkillResolver to load private channel parameters (λ_weekly, λ_daily, "
+                "cool-down gate thresholds, floor spend, pulse cadence) from "
+                "agents/analyst/skills/private_decay_pacing.md when present.\n\n"
+                "Call before budget planning cycles or after a spend surge to determine how long "
+                "the halo effect will sustain pipeline before the next pulse is needed."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "lookback_days": {
+                        "type": "integer",
+                        "description": (
+                            "Days of spend history to compute the adstock series over. "
+                            "Default 60. Minimum 21 (the longest max_lag_days across channels). "
+                            "Longer windows improve surge detection accuracy."
+                        ),
+                    },
+                    "execution_mode": {
+                        "type": "string",
+                        "enum": ["analyze", "flight_plan", "full"],
+                        "description": (
+                            "'analyze' — halo matrix only (faster). "
+                            "'flight_plan' — 14-day schedule only. "
+                            "'full' — both outputs (default, recommended)."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+        {
+            "name": "analyze_channel_saturation",
+            "description": (
+                "Compute per-channel spend saturation levels using the Hill function and Meridian "
+                "MMM posterior outputs. Identifies where additional budget investment generates "
+                "sharply diminishing returns and produces a machine-readable recommendation vector "
+                "for the Operator agent to cap or reallocate over-saturated spend.\n\n"
+                "Data sources:\n"
+                "  mmm_channel_contributions — posterior ROI distribution (roi_mean, roi_p5, roi_p95)\n"
+                "  platform_daily_spend — current 30-day spend per channel\n\n"
+                "Outputs:\n"
+                "  markdown_brief — scannable table: Channel | Spend | Saturation% | Marginal ROI | Status\n"
+                "  operator_vector — JSON recommendation list: cap_budget | freeze_budget_expansion | hold\n\n"
+                "Health status thresholds:\n"
+                "  ⚖️ Optimal    — saturation < 75% AND marginal ROI > 1.0\n"
+                "  ⚠️ Saturated  — saturation 75–85% OR marginal ROI 0.7–1.0\n"
+                "  🛑 Diminishing — saturation > 85% OR marginal ROI < 0.7 OR 85% spend rule triggered\n\n"
+                "Routing: Uses SkillResolver to load private channel parameters (EC50, alpha, CPA "
+                "corridors) from agents/analyst/skills/private_saturation_rules.md when present; "
+                "falls back to public heuristics in open-core deployments.\n\n"
+                "Call this tool before run_mmm_model or after run_mta_model to identify which "
+                "channels have room to scale vs. which need budget pruning."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "target_channels": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "List of channel names to analyse — e.g. ['google_ads', 'linkedin', 'meta']. "
+                            "Omit or pass null to analyse all channels present in the latest MMM run. "
+                            "Channel names must match the 'platform' field in platform_daily_spend: "
+                            "'google_ads', 'meta', 'linkedin', 'tiktok', 'reddit_ads'."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+        {
             "name": "audit_data_attribution_cleanliness",
             "description": (
                 "Run the Attribution Forensic Verification Engine to detect CRM data overwrites, "
@@ -2363,6 +2455,73 @@ class AnalystAgent(BaseAgent):
             "markdown_summary":          markdown_summary,
             "competitor_context_for_copy": competitor_context_for_copy,
         }
+
+    def _tool_evaluate_adstock_decay_pacing(
+        self,
+        lookback_days: int = 60,
+        execution_mode: str = "full",
+    ) -> dict:
+        """
+        Compute geometric adstock residuals per channel, flag organic session anomalies,
+        and build a 14-day programmatic flighting schedule with cool-down gates.
+        Routes through SkillResolver for private lambda/floor/cadence parameters.
+        """
+        from tools.adstock_analyst import AdstockAnalyst
+
+        analyst = AdstockAnalyst()
+        result  = analyst.run(
+            lookback_days=lookback_days,
+            execution_mode=execution_mode,
+        )
+
+        if "error" in result:
+            log.warning(
+                "analyst.adstock_error",
+                error=result["error"],
+                lookback_days=lookback_days,
+                execution_mode=execution_mode,
+            )
+            return result
+
+        log.info(
+            "analyst.adstock_complete",
+            prompt_source=result.get("prompt_source"),
+            channels=result.get("channels_analysed"),
+            organic_anomaly=result.get("organic_anomaly", {}).get("anomaly_detected", False),
+        )
+        return result
+
+    def _tool_analyze_channel_saturation(
+        self,
+        target_channels: list[str] | None = None,
+    ) -> dict:
+        """
+        Compute Hill function saturation metrics for each channel using the latest
+        Meridian MMM posterior and current 30-day spend. Routes through SkillResolver
+        to load proprietary EC50/alpha/CPA parameters from private_saturation_rules.md.
+
+        Returns markdown brief + machine-readable operator recommendation vector.
+        """
+        from tools.saturation_analyst import SaturationAnalyst
+
+        analyst = SaturationAnalyst()
+        result  = analyst.run(target_channels=target_channels or None)
+
+        if "error" in result:
+            log.warning(
+                "analyst.saturation_error",
+                error=result["error"],
+                target_channels=target_channels,
+            )
+            return result
+
+        log.info(
+            "analyst.saturation_complete",
+            prompt_source=result.get("prompt_source"),
+            channels=result.get("channels_analysed"),
+            run_id=result.get("run_id"),
+        )
+        return result
 
     def _tool_audit_data_attribution_cleanliness(
         self,

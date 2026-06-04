@@ -3,11 +3,18 @@
 # Persistent Attribution Required. See /LICENSE and /NOTICE for terms.
 # Central Suite Repository: https://github.com/arcticgreyy/paid-media-suite
 
+import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Resolve .env relative to the repo root (parent of this config/ directory).
+# This makes the path work regardless of the process working directory,
+# which is critical for Cloud Run, pytest, and direct CLI invocations.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_ENV_FILE  = os.path.join(_REPO_ROOT, ".env")
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore")
 
     # Anthropic
     anthropic_api_key: str

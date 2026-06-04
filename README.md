@@ -79,7 +79,9 @@ Corporate strategy and sensitive client playbooks are never committed to version
 agents/analyst/skills/
 ├── private_market_intelligence.md   ← loaded at runtime, never logged
 ├── private_account_intent.md        ← ICP tiers, suppression lists, intent thresholds
-└── private_meridian_priors.md       ← channel-specific MMM prior beliefs
+├── private_meridian_priors.md       ← channel-specific MMM prior beliefs
+├── private_saturation_rules.md      ← Hill function parameters + CPA tolerance corridors per channel
+└── private_decay_pacing.md          ← adstock lambda values, cool-down gates, floor spend, pulse cadence
 ```
 
 At inference time the resolver reads the relevant `.md` file and injects its contents into the agent's system prompt for that run only. The file contents are held in memory during the inference pass — they are never:
@@ -132,6 +134,8 @@ Also runs:
 
 - **BSTS Causal Analysis** (`causal_analyst_engine.py`) — JAX-backed Bayesian Structural Time Series for incrementality modeling with counterfactual intervals
 - **Meridian MMM** (`meridian_analyst_engine.py`, `mmm_optimizer_analyst.py`) — Google Meridian wrapper with posterior summary export and `task27.v1` budget recommendation packages
+- **Channel Saturation Analysis** (`saturation_analyst.py`) — Hill function saturation scoring with 85% diminishing-return rule, CPA tolerance corridors per channel, and Operator reallocation vectors
+- **Adstock Decay & Flighting** (`adstock_analyst.py`) — geometric adstock series per channel, cool-down gate eligibility, 14-day programmatic flighting schedule with PULSE_ON / COOL_DOWN / HOLD actions and floor enforcement
 - **Account-Based Analytics** (`account_analytics_inspector.py`) — IP-resolved company-level attribution; `intent_score` from firmographic signals, session depth, and multi-channel footprint
 - **Social Listening** (`social_listening_client.py`) — brand mention signals enriched into attribution context
 - **Creative Intelligence** (`creative_insights_client.py`) — asset-level performance signals feeding creative strategy recommendations
@@ -250,6 +254,8 @@ paid-media-agent/
 │   ├── causal_analyst_engine.py    # JAX BSTS incrementality engine
 │   ├── meridian_analyst_engine.py  # Google Meridian MMM wrapper
 │   ├── mmm_optimizer_analyst.py    # Posterior → task27.v1 budget package
+│   ├── saturation_analyst.py       # Hill function saturation + 85% rule + CPA corridors
+│   ├── adstock_analyst.py          # Geometric adstock series + cool-down gates + flighting schedule
 │   ├── account_analytics_inspector.py  # Account-based analytics
 │   ├── attribution_models.py       # Shapley value + Markov chain attribution
 │   ├── skill_resolver.py           # Open Core isolation — private .md loader

@@ -78,15 +78,25 @@ These are called automatically when relevant, or can be invoked directly.
 - `list_campaigns`, `get_campaign` — campaign metadata
 - `get_team`, `get_team_performance` — team structure and aggregated performance
 - `get_campaign_performance`, `get_benchmarks` — campaign metrics and industry benchmarks
+- `get_daily_performance` — daily spend + conversions by platform and campaign
+- `get_pacing_report` — budget pacing status across all active campaigns
+- `get_channel_efficiency`, `get_roas_comparison` — cross-channel efficiency and ROAS comparison
+- `get_ad_performance`, `get_keyword_performance` — creative-level and keyword-level metrics
 - `list_first_party_audiences`, `get_lookalike_strategy`, `list_third_party_audience_layers` — audience data
 - `get_measurement_overview`, `get_cm360_setup` — measurement setup
 - `list_attribution_models`, `get_attribution_results` — attribution configuration and model outputs
 - `get_attribution_run_history` — history of model runs
 
 ### Identity and signals
-- `list_identity_namespaces` — all registered signal types (gclid, fbclid, GA4 client_id, etc.)
-- `get_identity_signal_coverage` — which signals are captured for a given platform set
+- `list_identity_namespaces`, `get_identity_namespace` — all registered signal types (gclid, fbclid, GA4 client_id, etc.) with capture quality
+- `get_identity_signal_coverage` — which signals are captured for a given platform set, and gaps
 - `query_account_journey` — full multi-touch path for a specific company account domain
+
+### Account-based analytics
+- `get_company_profile` — IP-resolved firmographic profile + intent score for a target account
+- `get_company_sessions`, `get_company_engagement` — all paid-attributed sessions and engagement for one company
+- `get_target_account_activity`, `get_target_account_funnel` — pipeline account signals and funnel stage distribution
+- `get_dark_funnel_coverage` — which target accounts have no identity match (invisible to attribution)
 
 ### Data governance
 - `get_watchdog_alerts` — active data quality alerts from the Watchdog agent
