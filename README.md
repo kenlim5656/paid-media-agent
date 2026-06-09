@@ -190,7 +190,8 @@ pip install -e .
 
 # 2. Configure credentials
 cp .env.example .env
-# GCP_PROJECT_ID is required; all platform credentials are optional per adapter
+# PAID_MEDIA_GCP_PROJECT is required (legacy GCP_PROJECT_ID still accepted);
+# all platform credentials are optional per adapter
 
 # 3. Deploy BigQuery schema (first time only)
 bq mk --dataset YOUR_PROJECT_ID:paid_media

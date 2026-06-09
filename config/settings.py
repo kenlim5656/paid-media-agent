@@ -4,6 +4,7 @@
 # Central Suite Repository: https://github.com/arcticgreyy/paid-media-suite
 
 import os
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Resolve .env relative to the repo root (parent of this config/ directory).
@@ -21,8 +22,20 @@ class Settings(BaseSettings):
     claude_model: str = "claude-opus-4-8"
 
     # GCP / BigQuery
-    gcp_project_id: str
-    gcp_dataset_id: str = "paid_media"
+    # Canonical env vars (shared with paid-media-mcp): PAID_MEDIA_GCP_PROJECT,
+    # PAID_MEDIA_BQ_DATASET. Legacy names GCP_PROJECT_ID / GCP_DATASET_ID are
+    # accepted as fallbacks — validate_settings() warns when only legacy is set.
+    gcp_project_id: str = Field(
+        validation_alias=AliasChoices(
+            "PAID_MEDIA_GCP_PROJECT", "GCP_PROJECT_ID", "gcp_project_id"
+        ),
+    )
+    gcp_dataset_id: str = Field(
+        default="paid_media",
+        validation_alias=AliasChoices(
+            "PAID_MEDIA_BQ_DATASET", "GCP_DATASET_ID", "gcp_dataset_id"
+        ),
+    )
 
     # Salesforce
     sf_username: str = ""
@@ -138,3 +151,61 @@ class Settings(BaseSettings):
 
 
 settings = Settings()  # type: ignore[call-arg]
+
+
+# ── Startup validation ─────────────────────────────────────────────────────────
+
+def _env_is_set(name: str) -> bool:
+    """True if the var is set in the process environment or the .env file."""
+    if os.environ.get(name):
+        return True
+    try:
+        with open(_ENV_FILE) as fh:
+            return any(
+                line.strip().startswith(f"{name}=") and line.strip() != f"{name}="
+                for line in fh
+            )
+    except OSError:
+        return False
+
+
+def validate_settings() -> None:
+    """
+    Fail fast with an actionable message before any agent or HTTP route runs.
+
+    Call this at process startup (Cloud Run app lifespan, orchestrator main)
+    rather than relying on a mid-run BigQuery or Anthropic error. Also emits
+    deprecation warnings when only the legacy GCP env-var names are set.
+    """
+    import structlog
+    log = structlog.get_logger()
+
+    problems: list[str] = []
+    if not settings.anthropic_api_key:
+        problems.append("ANTHROPIC_API_KEY is not set")
+    if not settings.gcp_project_id:
+        problems.append(
+            "PAID_MEDIA_GCP_PROJECT is not set (legacy fallback GCP_PROJECT_ID also empty)"
+        )
+    if not settings.gcp_dataset_id:
+        problems.append(
+            "PAID_MEDIA_BQ_DATASET is not set and no default applied "
+            "(legacy fallback GCP_DATASET_ID also empty)"
+        )
+    if problems:
+        raise RuntimeError(
+            "Invalid configuration — fix .env or the deploy env vars:\n  - "
+            + "\n  - ".join(problems)
+        )
+
+    for canonical, legacy in (
+        ("PAID_MEDIA_GCP_PROJECT", "GCP_PROJECT_ID"),
+        ("PAID_MEDIA_BQ_DATASET", "GCP_DATASET_ID"),
+    ):
+        if _env_is_set(legacy) and not _env_is_set(canonical):
+            log.warning(
+                "settings.deprecated_env_var",
+                legacy=legacy,
+                canonical=canonical,
+                hint=f"{legacy} still works but is deprecated — rename it to {canonical}.",
+            )

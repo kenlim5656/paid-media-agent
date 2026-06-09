@@ -162,7 +162,7 @@ cd paid-media-schema
 bq mk --dataset YOUR_PROJECT_ID:paid_media
 
 # Deploy all tables (replace placeholders first)
-for f in bigquery/0*.sql; do
+for f in bigquery/0*.sql bigquery/1*.sql; do
   sed "s/{project}/YOUR_PROJECT_ID/g; s/{dataset}/paid_media/g" "$f" \
     | bq query --use_legacy_sql=false
   echo "Deployed $f"
@@ -170,6 +170,23 @@ done
 ```
 
 Verify: open BigQuery console → your project → `paid_media` dataset → you should see 23 tables and 9 views.
+
+**Required external imports — populate before the views return data:**
+
+The schema creates three staging tables as empty stubs, but **your ETL must
+populate them** — the agents only read from them:
+
+| Table | Created by | Populated by | Key columns |
+|---|---|---|---|
+| `sessions` | `02_touchpoints.sql` | GA4 BigQuery export ETL | `session_id`, `ga4_client_id`, `utm_campaign`, `gclid`/`fbclid`/`li_fat_id`/`ttclid`, `session_start_at` |
+| `crm_leads_staging` | `18_external_staging.sql` | CRM (Salesforce/HubSpot) export | `lead_id`, `email`, `account_id`, `ga_client_id`, click IDs, `lead_source`, `created_at` |
+| `crm_opportunities_staging` | `18_external_staging.sql` | CRM export | `account_id`, `company_domain`, `pipeline_stage`, `is_closed`, `amount`, `close_date` |
+
+See the header of `schema/bigquery/18_external_staging.sql` for the full
+column contract and which agent/view reads each column. Until these are
+populated, `v_reporting_campaign_roi` (17_unified_reporting.sql) and the
+audience-mutation views return no rows, and the Operator's open-pipeline
+suppression falls back to the live Salesforce API.
 
 ### Step 3: Set up paid-media-mcp (BigQuery mode)
 
@@ -190,8 +207,8 @@ Configure Claude Desktop / Code (same as simple mode, but add BigQuery env vars)
       "args": ["/path/to/paid-media-mcp/dist/index.js"],
       "env": {
         "PAID_MEDIA_DATA_DIR": "/path/to/paid-media-mcp/data",
-        "BIGQUERY_PROJECT_ID": "YOUR_PROJECT_ID",
-        "BIGQUERY_DATASET_ID": "paid_media",
+        "PAID_MEDIA_GCP_PROJECT": "YOUR_PROJECT_ID",
+        "PAID_MEDIA_BQ_DATASET": "paid_media",
         "GOOGLE_APPLICATION_CREDENTIALS": "/path/to/service-account.json",
         "PAID_MEDIA_SCHEMA_DIR": "/path/to/paid-media-schema",
         "PAID_MEDIA_AGENT_URL": "https://YOUR_CLOUD_RUN_URL"
@@ -242,7 +259,7 @@ gcloud run deploy paid-media-agent \
   --platform managed \
   --region us-central1 \
   --service-account paid-media-agent@YOUR_PROJECT_ID.iam.gserviceaccount.com \
-  --set-env-vars="GCP_PROJECT_ID=YOUR_PROJECT_ID,GCP_DATASET_ID=paid_media" \
+  --set-env-vars="PAID_MEDIA_GCP_PROJECT=YOUR_PROJECT_ID,PAID_MEDIA_BQ_DATASET=paid_media" \
   --set-secrets="ANTHROPIC_API_KEY=anthropic-api-key:latest" \
   --no-allow-unauthenticated
 ```
@@ -279,6 +296,26 @@ gcloud scheduler jobs create http attribution-operator \
   --oidc-service-account-email=paid-media-agent@YOUR_PROJECT_ID.iam.gserviceaccount.com \
   --location=us-central1
 ```
+
+**HTTP endpoints exposed by the Cloud Run service:**
+
+| Route | Method | Caller | Purpose |
+|---|---|---|---|
+| `/run?agent=<name>` | POST | Cloud Scheduler / MCP `trigger_agent_run` | Run watchdog, analyst, or operator |
+| `/query/account-journey` | POST | MCP `query_account_journey` | Read-only journey lookup for one account domain |
+| `/action/audience-suppression` | POST | MCP `push_audience_suppression` | Operator-guarded audience exclusion push |
+| `/action/reallocate-budget` | POST | MCP `reallocate_media_budget` | Operator-guarded budget reallocation |
+| `/health` | GET | Cloud Run | Liveness probe |
+
+The `/action/*` routes run through the Operator's `log_proposed_action` →
+execution-tool path: `OPERATOR_REQUIRE_APPROVAL` queues the action in
+`operator_pending_approvals` instead of executing, and the platform clients
+enforce `MAX_BUDGET_SHIFT_PCT`. Set `PAID_MEDIA_AGENT_URL` in the MCP config
+to the Cloud Run URL to enable them.
+
+> The service is deployed with `--no-allow-unauthenticated`, so callers must
+> present a Google-signed identity token. In-handler OIDC verification is
+> tracked separately (Phase 2 of the review).
 
 ### Step 6: Install skills and activate agent
 

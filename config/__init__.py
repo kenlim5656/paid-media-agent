@@ -3,6 +3,6 @@
 # Persistent Attribution Required. See /LICENSE and /NOTICE for terms.
 # Central Suite Repository: https://github.com/arcticgreyy/paid-media-suite
 
-from .settings import settings
+from .settings import settings, validate_settings
 
-__all__ = ["settings"]
+__all__ = ["settings", "validate_settings"]

@@ -53,6 +53,13 @@
 --         company_engagement, target_account_activity
 -- Views:  v_target_account_funnel, v_dark_funnel_coverage
 
+-- 8. External staging stubs (no dependencies — REQUIRED before 14/16/17)
+-- Source: 18_external_staging.sql
+-- Tables: crm_leads_staging, crm_opportunities_staging
+-- Empty stubs only — your CRM ETL must populate them. The `sessions` table
+-- (02_touchpoints.sql) likewise needs a GA4-export ETL feed before the
+-- unified reporting views return rows.
+
 -- =============================================================================
 -- TABLE DEPENDENCY MAP
 -- =============================================================================

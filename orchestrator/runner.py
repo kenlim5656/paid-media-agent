@@ -66,6 +66,9 @@ def main() -> None:
     parser.add_argument("--agent", choices=["watchdog", "analyst", "operator", "all"], required=True)
     args = parser.parse_args()
 
+    from config import validate_settings
+    validate_settings()
+
     if args.agent == "watchdog":
         result = run_watchdog()
     elif args.agent == "analyst":
