@@ -11,6 +11,7 @@ or triggered by Cloud Scheduler hitting a Cloud Run endpoint.
 import argparse
 import sys
 from datetime import date, timedelta
+
 import structlog
 
 log = structlog.get_logger()

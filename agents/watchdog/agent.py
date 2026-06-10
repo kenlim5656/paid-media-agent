@@ -10,9 +10,10 @@ all configured ad platforms. Writes structured alerts and capture-rate
 history to BigQuery (paid-media-schema agent output tables) so the
 paid-media-mcp can surface them in interactive skill sessions.
 """
+from datetime import datetime, timezone
+
 import httpx
 import structlog
-from datetime import datetime, timezone
 
 from agents.base import BaseAgent
 from config import settings

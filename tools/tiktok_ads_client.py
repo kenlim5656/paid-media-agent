@@ -41,10 +41,10 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from tools.http_retry import get_with_retry
 import structlog
 
 from config import settings
+from tools.http_retry import get_with_retry
 
 log = structlog.get_logger()
 

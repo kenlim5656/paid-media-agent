@@ -67,7 +67,6 @@ Output Tables (paid-media-schema / 10_causal_impact.sql)
 from __future__ import annotations
 
 import json
-import math
 import os
 import time
 import uuid
@@ -547,8 +546,8 @@ class CausalImpactEngine:
             ≥ 1.10  — increase n_draws or n_warmup
         """
         try:
-            import tensorflow_probability.substrates.jax as tfp_jax
             import jax.numpy as jnp
+            import tensorflow_probability.substrates.jax as tfp_jax
 
             # Extract iterable of parameter tensors
             if isinstance(samples, dict):

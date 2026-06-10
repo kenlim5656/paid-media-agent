@@ -12,14 +12,15 @@ Platform-agnostic: supports GMP, Meta, LinkedIn, Google Ads, TikTok via platform
 import hashlib
 import json
 import textwrap
-import structlog
 from datetime import date, datetime, timezone
 
 import anthropic
+import structlog
 
 from agents.base import BaseAgent
 from config import settings
-from tools import bigquery_client as bq, gmp_client, salesforce_client
+from tools import bigquery_client as bq
+from tools import salesforce_client
 
 log = structlog.get_logger()
 
@@ -566,13 +567,20 @@ class OperatorAgent(BaseAgent):
         domains: list[str],
     ) -> dict:
         from tools.gmp_client import ApprovalRequiredError, dv360_push_audience_exclusion
-        from tools.meta_client import MetaAPIError, add_domains_to_exclusion_audience
-        from tools.linkedin_client import LinkedInAPIError, add_companies_to_segment
         from tools.google_ads_client import (
-            GoogleAdsAPIError, GoogleAdsSetupError, push_domain_suppression as gads_push_suppression,
+            GoogleAdsAPIError,
+            GoogleAdsSetupError,
+        )
+        from tools.google_ads_client import (
+            push_domain_suppression as gads_push_suppression,
+        )
+        from tools.linkedin_client import LinkedInAPIError, add_companies_to_segment
+        from tools.meta_client import MetaAPIError, add_domains_to_exclusion_audience
+        from tools.tiktok_ads_client import (
+            TikTokAdsError,
+            TikTokSetupError,
         )
         from tools.tiktok_ads_client import (
-            TikTokAdsError, TikTokSetupError,
             push_domain_suppression as tiktok_push_suppression,
         )
 
@@ -616,7 +624,6 @@ class OperatorAgent(BaseAgent):
 
             elif platform == "reddit_ads":
                 from tools.reddit_ads_client import (
-                    RedditAdsError, RedditAdsSetupError,
                     push_domain_suppression as reddit_push_suppression,
                 )
                 # Reddit Ads Custom Audience — audience_list_id is the Reddit audience ID.
@@ -672,22 +679,38 @@ class OperatorAgent(BaseAgent):
         amount_usd: float,
     ) -> dict:
         from tools.gmp_client import ApprovalRequiredError, dv360_reallocate_budget, sa360_adjust_campaign_budget
-        from tools.meta_client import (
-            MetaAPIError,
-            get_campaign as meta_get_campaign,
-            update_campaign_daily_budget as meta_update_budget,
+        from tools.google_ads_client import (
+            GoogleAdsAPIError,
+            GoogleAdsBudgetGuardrailError,
+            GoogleAdsSetupError,
+        )
+        from tools.google_ads_client import (
+            reallocate_campaign_budget as gads_reallocate,
         )
         from tools.linkedin_client import (
             LinkedInAPIError,
+        )
+        from tools.linkedin_client import (
             get_campaign as li_get_campaign,
+        )
+        from tools.linkedin_client import (
             update_campaign_daily_budget as li_update_budget,
         )
-        from tools.google_ads_client import (
-            GoogleAdsAPIError, GoogleAdsSetupError, GoogleAdsBudgetGuardrailError,
-            reallocate_campaign_budget as gads_reallocate,
+        from tools.meta_client import (
+            MetaAPIError,
+        )
+        from tools.meta_client import (
+            get_campaign as meta_get_campaign,
+        )
+        from tools.meta_client import (
+            update_campaign_daily_budget as meta_update_budget,
         )
         from tools.tiktok_ads_client import (
-            TikTokAdsError, TikTokSetupError, TikTokBudgetGuardrailError,
+            TikTokAdsError,
+            TikTokBudgetGuardrailError,
+            TikTokSetupError,
+        )
+        from tools.tiktok_ads_client import (
             reallocate_campaign_budget as tiktok_reallocate,
         )
 
@@ -753,7 +776,6 @@ class OperatorAgent(BaseAgent):
 
             elif platform == "reddit_ads":
                 from tools.reddit_ads_client import (
-                    RedditAdsError, RedditAdsSetupError, RedditAdsBudgetGuardrailError,
                     reallocate_campaign_budget as reddit_reallocate,
                 )
                 # advertiser_id = Reddit ad account ID (t2_xxx / a2_xxx — validated in client)
@@ -939,10 +961,10 @@ class OperatorAgent(BaseAgent):
           top_format_by_cvr      — highest-CVR asset format from historical data
         """
         from tools.creative_insights_client import (
-            get_top_performing_ads,
-            get_asset_type_performance_correlation,
-            format_few_shot_context,
             format_asset_correlation_context,
+            format_few_shot_context,
+            get_asset_type_performance_correlation,
+            get_top_performing_ads,
         )
 
         objective = campaign_objective or "lead_gen"
@@ -1254,35 +1276,39 @@ class OperatorAgent(BaseAgent):
           4. BQ action log update per executed channel.
           5. Markdown confirmation log returned alongside structured results.
         """
+        from tools.gmp_client import ApprovalRequiredError
         from tools.google_ads_operator import (
-            modify_google_campaign_budget,
             GOOGLE_ADS_MIN_DAILY_BUDGET_USD,
-            GoogleAdsBudgetGuardrailError,
             GoogleAdsAPIError,
+            GoogleAdsBudgetGuardrailError,
             GoogleAdsSetupError,
-        )
-        from tools.tiktok_ads_operator import (
-            modify_tiktok_campaign_budget,
-            TIKTOK_MIN_DAILY_BUDGET_USD,
-            TikTokBudgetGuardrailError,
-            TikTokAdsError,
-            TikTokSetupError,
-        )
-        from tools.meta_client import (
-            MetaAPIError,
-            update_campaign_daily_budget as meta_update_budget,
+            modify_google_campaign_budget,
         )
         from tools.linkedin_client import (
             LinkedInAPIError,
+        )
+        from tools.linkedin_client import (
             update_campaign_daily_budget as li_update_budget,
         )
+        from tools.meta_client import (
+            MetaAPIError,
+        )
+        from tools.meta_client import (
+            update_campaign_daily_budget as meta_update_budget,
+        )
         from tools.reddit_ads_client import (
+            RedditAdsBudgetGuardrailError,
             RedditAdsError,
             RedditAdsSetupError,
-            RedditAdsBudgetGuardrailError,
             modify_reddit_campaign_budget,
         )
-        from tools.gmp_client import ApprovalRequiredError
+        from tools.tiktok_ads_operator import (
+            TIKTOK_MIN_DAILY_BUDGET_USD,
+            TikTokAdsError,
+            TikTokBudgetGuardrailError,
+            TikTokSetupError,
+            modify_tiktok_campaign_budget,
+        )
 
         # ── 0. Schema version guard ───────────────────────────────────────────
         schema_version = execution_package.get("schema_version", "")
@@ -1325,49 +1351,6 @@ class OperatorAgent(BaseAgent):
             execution_package.get("max_shift_pct_policy", 10.0)
         )
         mmm_run_id: str = execution_package.get("mmm_run_id", "unknown")
-
-        # ── 1.5 Idempotency guard ─────────────────────────────────────────────
-        # A scheduler retry or double cron fire must not apply the same task27
-        # package twice. Every execution that mutates at least one channel
-        # writes a record keyed by the package's SHA-256; replays return the
-        # prior outcome instead of mutating again. The check fails CLOSED: if
-        # the lookup itself errors, we refuse to move money blind.
-        package_hash = _hash_execution_package(execution_package)
-        try:
-            prior = self._find_executed_package(package_hash)
-        except Exception as exc:
-            return {
-                "action_id": action_id,
-                "executed":  False,
-                "reason": (
-                    f"Idempotency check against operator_action_log failed ({exc}). "
-                    "Refusing to execute budget mutations without replay protection — retry "
-                    "once BigQuery is reachable."
-                ),
-            }
-        if prior:
-            log.warning(
-                "operator.budget_reallocation.replay_blocked",
-                action_id=action_id,
-                package_hash=package_hash,
-                prior_action_id=prior.get("action_id"),
-                prior_status=prior.get("status"),
-            )
-            return {
-                "action_id":        action_id,
-                "executed":         False,
-                "replay_blocked":   True,
-                "package_hash":     package_hash,
-                "prior_action_id":  prior.get("action_id"),
-                "prior_status":     prior.get("status"),
-                "prior_executed_at": prior.get("executed_at"),
-                "reason": (
-                    "This exact task27 package was already executed "
-                    f"(action {prior.get('action_id')}, status '{prior.get('status')}'). "
-                    "Re-applying it could compound budget shifts. Generate a fresh "
-                    "optimization package if a new reallocation is intended."
-                ),
-            }
 
         # ── 2. Pre-flight guardrail sweep (all-or-nothing) ────────────────────
         preflight_errors: list[str] = []
@@ -1423,6 +1406,51 @@ class OperatorAgent(BaseAgent):
                 "reason": (
                     f"{len(preflight_errors)} pre-flight check(s) failed. "
                     "Zero mutations applied — resolve all errors before retrying."
+                ),
+            }
+
+        # ── 2.5 Idempotency guard ─────────────────────────────────────────────
+        # A scheduler retry or double cron fire must not apply the same task27
+        # package twice. Every execution that mutates at least one channel
+        # writes a record keyed by the package's SHA-256; replays return the
+        # prior outcome instead of mutating again. Runs after pre-flight (so a
+        # malformed package reports its errors without a BQ round-trip) and
+        # fails CLOSED: if the lookup itself errors, we refuse to move money
+        # blind.
+        package_hash = _hash_execution_package(execution_package)
+        try:
+            prior = self._find_executed_package(package_hash)
+        except Exception as exc:
+            return {
+                "action_id": action_id,
+                "executed":  False,
+                "reason": (
+                    f"Idempotency check against operator_action_log failed ({exc}). "
+                    "Refusing to execute budget mutations without replay protection — retry "
+                    "once BigQuery is reachable."
+                ),
+            }
+        if prior:
+            log.warning(
+                "operator.budget_reallocation.replay_blocked",
+                action_id=action_id,
+                package_hash=package_hash,
+                prior_action_id=prior.get("action_id"),
+                prior_status=prior.get("status"),
+            )
+            return {
+                "action_id":        action_id,
+                "executed":         False,
+                "replay_blocked":   True,
+                "package_hash":     package_hash,
+                "prior_action_id":  prior.get("action_id"),
+                "prior_status":     prior.get("status"),
+                "prior_executed_at": prior.get("executed_at"),
+                "reason": (
+                    "This exact task27 package was already executed "
+                    f"(action {prior.get('action_id')}, status '{prior.get('status')}'). "
+                    "Re-applying it could compound budget shifts. Generate a fresh "
+                    "optimization package if a new reallocation is intended."
                 ),
             }
 
@@ -1717,7 +1745,7 @@ def _build_visual_briefs_section(visual_briefs: list[dict]) -> str:
 
         concept = brief.get("visual_concept", "")
         if concept:
-            lines.append(f"> **Visual Concept:**")
+            lines.append("> **Visual Concept:**")
             lines.append(f"> {concept}")
             lines.append(">")
 
@@ -1797,7 +1825,7 @@ def _build_creative_brief_markdown(
     copy_section   = _build_copy_matrix_section(text_variants, channels)
     visual_section = _build_visual_briefs_section(visual_briefs)
 
-    footer = textwrap.dedent(f"""\
+    footer = textwrap.dedent("""\
         ---
 
         *Brief generated by the Paid Media Agent creative engine.*
@@ -1847,11 +1875,11 @@ def _build_mutation_markdown(run_label: str, result: dict) -> str:
     overall_badge = "✅ Mutation complete" if ok else "❌ Mutation failed or partial"
 
     lines: list[str] = [
-        f"## 🔄 Lookalike Seed Mutation Report",
+        "## 🔄 Lookalike Seed Mutation Report",
         f"**{run_label}**",
         "",
-        f"| | |",
-        f"|-|-|",
+        "| | |",
+        "|-|-|",
         f"| **Status** | {overall_badge} ({platforms_pushed}/{platforms_total} platforms) |",
         f"| **Run ID** | `{run_id}` |",
         f"| **Generated** | {today} |",
@@ -2058,8 +2086,8 @@ def _build_budget_reallocation_markdown(
     lines: list[str] = [
         "## 🤖 Budget Reallocation Execution Log",
         "",
-        f"| Field | Value |",
-        f"|-------|-------|",
+        "| Field | Value |",
+        "|-------|-------|",
         f"| MMM Run ID | `{mmm_run_id}` |",
         f"| Action ID | `{action_id}` |",
         f"| Channels processed | {total} |",

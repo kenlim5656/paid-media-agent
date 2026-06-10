@@ -42,9 +42,11 @@ Install dependencies:
 from __future__ import annotations
 
 import math
-import os
-from dataclasses import dataclass, field
-from typing import Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import numpy as np  # heavy dep — imported lazily at runtime
 
 import structlog
 
@@ -314,8 +316,9 @@ def load_meridian_data(
     _check_deps()
     import numpy as np
     import pandas as pd
-    from tools.bigquery_client import get_client
+
     from config import settings
+    from tools.bigquery_client import get_client
 
     log.info(
         "meridian_loader.start",
@@ -771,7 +774,6 @@ def apply_attribution_correction(
         Modified input package with KPI tensor adjusted.
         If warn_only=True or correction_weights is empty, returns data unchanged.
     """
-    import numpy as np
 
     if not correction_weights:
         log.info("meridian_loader.correction.no_weights", note="KPI tensor unchanged.")
@@ -896,7 +898,6 @@ def describe_tensor(data: MeridianInputData) -> dict:
     Return a diagnostic dict for logging and the MMM run record in BigQuery.
     Contains shape metadata, spend totals, and data sparsity metrics.
     """
-    import numpy as np
     return {
         "n_geos":              data.n_geos,
         "n_weeks":             data.n_weeks,

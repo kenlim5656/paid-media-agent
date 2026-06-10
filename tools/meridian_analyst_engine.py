@@ -74,7 +74,10 @@ import pickle
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import numpy as np  # heavy dep — imported lazily at runtime
 
 import structlog
 
@@ -445,11 +448,11 @@ class MeridianAnalystEngine:
         """
         self._check_mmm_deps()
 
-        import numpy as np
         import jax
+        import numpy as np
         from meridian.data.load import DataTensors
-        from meridian.model.spec import ModelSpec
         from meridian.model.model import Meridian
+        from meridian.model.spec import ModelSpec
 
         log.info("meridian_engine.build_model", run_id=self.run_id)
 
@@ -584,7 +587,7 @@ class MeridianAnalystEngine:
 
         self._check_mmm_deps()
         import time
-        import numpy as np
+
 
         log.info(
             "meridian_engine.sampling_start",
@@ -713,7 +716,6 @@ class MeridianAnalystEngine:
         Extract per-channel ROI estimates (mean + 90% credible interval) from the
         posterior samples. Returns a dict keyed by channel name.
         """
-        import numpy as np
 
         roi_summary: dict[str, dict] = {}
         try:
@@ -837,7 +839,7 @@ class MeridianAnalystEngine:
         if not self.fitted:
             raise RuntimeError("Model must be fitted before writing diagnostics.")
 
-        from tools.bigquery_client import insert_rows, table_ref
+        from tools.bigquery_client import insert_rows
         now = datetime.now(timezone.utc).isoformat()
         data = self.input_data
         diag = self.diagnostics

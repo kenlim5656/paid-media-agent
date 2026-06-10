@@ -4,6 +4,7 @@
 # Central Suite Repository: https://github.com/arcticgreyy/paid-media-suite
 
 from simple_salesforce import Salesforce
+
 from config import settings
 
 _sf: Salesforce | None = None

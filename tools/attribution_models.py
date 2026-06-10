@@ -11,12 +11,13 @@ per-channel credit weights compatible with the attribution_results schema.
 
 These are called by the Analyst agent as tool implementations.
 """
-import math
 import itertools
+import math
 import random
-import structlog
 from collections import defaultdict
 from datetime import datetime, timezone
+
+import structlog
 
 from tools import bigquery_client as bq
 

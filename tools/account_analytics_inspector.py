@@ -60,8 +60,6 @@ Privacy constraints (inherited from 07_account_analytics.sql):
 
 from __future__ import annotations
 
-from typing import Any
-
 import structlog
 
 from tools import bigquery_client as bq
@@ -489,7 +487,7 @@ def _build_markdown_brief(
         desc  = _TIER_DESCRIPTIONS[tier_key]
 
         lines += [
-            f"---",
+            "---",
             "",
             f"### {label}",
             "",
@@ -514,7 +512,7 @@ def _build_markdown_brief(
         "*Evaluation framework: "
         + ("`Extended Secure Framework` (private heuristics active)" if prompt_source == "private"
            else "`Standard Open Core Engine` (public fallback)")
-        + f" | Tables: `company_engagement`, `company_profiles`, `target_account_activity`*",
+        + " | Tables: `company_engagement`, `company_profiles`, `target_account_activity`*",
     ]
 
     return "\n".join(lines)

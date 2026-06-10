@@ -31,9 +31,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import structlog
 from decimal import Decimal
 from typing import Any
+
+import structlog
 
 from config import settings
 

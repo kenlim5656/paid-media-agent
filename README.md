@@ -187,6 +187,7 @@ All actions logged to `operator_action_log`. Human approval required by default 
 git clone https://github.com/arcticgreyy/paid-media-agent.git
 cd paid-media-agent
 pip install -e .
+bash scripts/install-hooks.sh   # pre-commit guard against committing private assets
 
 # 2. Configure credentials
 cp .env.example .env

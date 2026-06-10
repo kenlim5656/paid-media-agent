@@ -29,22 +29,21 @@ Enrichment run sequence (called by AnalystAgent.enrich_sessions tool):
 
 from __future__ import annotations
 
-import uuid
-from datetime import date, datetime, timezone, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import structlog
 
 from config import settings
 from tools import bigquery_client as bq
-from tools.ip_intelligence_client import (
-    IPIntelligenceClient,
-    CompanyResolution,
-    build_provider,
-)
 from tools.analytics_writer import (
-    BigQueryCacheReader,
     BigQueryAnalyticsWriter,
+    BigQueryCacheReader,
+)
+from tools.ip_intelligence_client import (
+    CompanyResolution,
+    IPIntelligenceClient,
+    build_provider,
 )
 
 if TYPE_CHECKING:

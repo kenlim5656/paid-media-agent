@@ -34,7 +34,7 @@ from pydantic import BaseModel, Field
 
 from config import settings, validate_settings
 from orchestrator import http_actions
-from orchestrator.runner import run_watchdog, run_analyst, run_operator
+from orchestrator.runner import run_analyst, run_operator, run_watchdog
 
 
 @asynccontextmanager

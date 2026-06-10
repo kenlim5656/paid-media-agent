@@ -4,6 +4,7 @@
 # Central Suite Repository: https://github.com/arcticgreyy/paid-media-suite
 
 import os
+
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 

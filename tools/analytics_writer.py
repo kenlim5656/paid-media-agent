@@ -24,14 +24,14 @@ Usage:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Protocol, runtime_checkable
 
 import structlog
 
-from tools import bigquery_client as bq
-from tools.ip_intelligence_client import CompanyResolution, CacheReader
 from config import settings
+from tools import bigquery_client as bq
+from tools.ip_intelligence_client import CacheReader, CompanyResolution
 
 log = structlog.get_logger()
 

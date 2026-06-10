@@ -429,7 +429,6 @@ class GoogleTrendsClient:
                 "tz":    0,
                 "req":   json.dumps(timeline_req, separators=(",", ":")),
                 "token": timeline_token,
-                "tz":    0,
             },
             headers=_DIRECT_HTTP_HEADERS,
             timeout=20,

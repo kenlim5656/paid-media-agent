@@ -8,8 +8,10 @@ Google Marketing Platform clients: CM360, DV360, SA360.
 All write operations gate on settings.operator_require_approval.
 """
 import json
-from googleapiclient.discovery import build
+
 from google.auth import default as google_auth_default
+from googleapiclient.discovery import build
+
 from config import settings
 
 

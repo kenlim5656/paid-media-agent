@@ -31,9 +31,7 @@ the environment variables described in tools/google_ads_client.py (Full Mode).
 """
 from __future__ import annotations
 
-import os
 import sys
-import webbrowser
 from pathlib import Path
 
 # ── Dependency check ──────────────────────────────────────────────────────────
@@ -132,8 +130,8 @@ def _run_oauth_flow(client_id: str, client_secret: str) -> str:
 
     flow = InstalledAppFlow.from_client_config(client_config, scopes=OAUTH_SCOPES)
 
-    print(f"\n  Opening browser for Google authorization...")
-    print(f"  If the browser does not open automatically, visit the URL printed below.\n")
+    print("\n  Opening browser for Google authorization...")
+    print("  If the browser does not open automatically, visit the URL printed below.\n")
 
     try:
         # run_local_server opens the browser and captures the auth code automatically.
@@ -202,6 +200,7 @@ def _verify_connection(yaml_path: Path) -> bool:
     """
     try:
         from google.ads.googleads.client import GoogleAdsClient  # type: ignore[import]
+
         from tools.google_ads_client import GOOGLE_ADS_API_VERSION
         client = GoogleAdsClient.load_from_storage(str(yaml_path), version=GOOGLE_ADS_API_VERSION)
         # CustomerService.list_accessible_customers is the standard connectivity probe

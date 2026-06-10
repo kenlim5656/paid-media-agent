@@ -8,8 +8,10 @@ Shared agentic loop. Each agent subclass declares its tools and system prompt.
 Uses the Anthropic tool-use loop with prompt caching on the system turn.
 """
 import json
-import structlog
+
 import anthropic
+import structlog
+
 from config import settings
 
 log = structlog.get_logger()

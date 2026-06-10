@@ -17,10 +17,12 @@ All write operations gate on settings.operator_require_approval.
 """
 import hashlib
 import json
-import structlog
+
 import httpx
-from tools.http_retry import get_with_retry
+import structlog
+
 from config import settings
+from tools.http_retry import get_with_retry
 
 log = structlog.get_logger()
 

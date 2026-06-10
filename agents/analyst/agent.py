@@ -11,12 +11,13 @@ can surface results in interactive skill sessions.
 """
 import json
 import math
-import uuid
-import structlog
 from datetime import datetime, timezone
 from typing import Any
 
+import structlog
+
 from agents.base import BaseAgent
+from config import settings
 from tools import bigquery_client as bq
 
 log = structlog.get_logger()
@@ -1640,7 +1641,7 @@ class AnalystAgent(BaseAgent):
         max_channels: int | None = None,
         max_paths: int | None = None,
     ) -> dict:
-        from tools.attribution_models import load_paths, compute_shapley, write_model_results
+        from tools.attribution_models import compute_shapley, load_paths, write_model_results
         max_ch  = max_channels or settings.shapley_max_channels
         max_p   = max_paths    or settings.shapley_max_paths
 
@@ -1663,7 +1664,7 @@ class AnalystAgent(BaseAgent):
         conversion_types: list[str] | None = None,
         max_paths: int | None = None,
     ) -> dict:
-        from tools.attribution_models import load_paths, compute_markov, write_model_results
+        from tools.attribution_models import compute_markov, load_paths, write_model_results
         max_p = max_paths or settings.shapley_max_paths
 
         log.info("analyst.markov_start", run_id=run_id, period=f"{period_start}→{period_end}")
@@ -2086,6 +2087,7 @@ class AnalystAgent(BaseAgent):
         """
         try:
             import pandas as pd
+
             from tools.causal_analyst_engine import CausalInputData, run_causal_analysis
         except ImportError as exc:
             return {
@@ -2417,8 +2419,8 @@ class AnalystAgent(BaseAgent):
         """
         from tools.market_signals_client import (
             MarketSignalsClient,
-            get_competitor_context,
             format_competitor_context_for_copy,
+            get_competitor_context,
         )
 
         client = MarketSignalsClient()
@@ -2690,8 +2692,8 @@ def _build_market_signals_markdown(
       4. Messaging Pillars breakdown
       5. Counter-Positioning Action Guide (3 concrete hooks)
     """
-    from datetime import date
     import json as _json
+    from datetime import date
 
     today        = date.today().isoformat()
     run_id       = result.get("run_id", "—")
@@ -2723,8 +2725,8 @@ def _build_market_signals_markdown(
     lines: list[str] = [
         f"## 🕵️ Market Signals Report: {competitor_name}{cat_label}",
         "",
-        f"| | |",
-        f"|-|-|",
+        "| | |",
+        "|-|-|",
         f"| **Status** | {status_badge} |",
         f"| **Run ID** | `{run_id}` |",
         f"| **Analysis date** | {today} |",
@@ -2841,10 +2843,10 @@ def _build_market_signals_markdown(
     lines += [
         "---",
         "",
-        f"*Analysis produced by the Paid Media Analyst Agent — Market Signals Engine (Task 36).*",
+        "*Analysis produced by the Paid Media Analyst Agent — Market Signals Engine (Task 36).*",
         f"*Evaluation mode: {prompt_badge}. "
         f"Raw signals in `market_signals_staging` · Vector in `competitor_messaging_vectors`.*",
-        f"*To use this as context in ad copy generation, pass the "
+        "*To use this as context in ad copy generation, pass the "
         "`competitor_context_for_copy` field to `generate_creative_campaign_brief`.*",
     ]
 
@@ -2953,7 +2955,7 @@ def _build_momentum_markdown(
 
     if new_kws:
         lines.append(
-            f"🆕 **New keywords (no prior baseline):** "
+            "🆕 **New keywords (no prior baseline):** "
             + ", ".join(f"`{k}`" for k in new_kws)
             + " — first observation window. Monitor for sustained momentum."
         )
@@ -3037,7 +3039,7 @@ def _build_audit_markdown(result: dict) -> str:
         if not tr.get("ok", False):
             return "⚠️ Skipped"
         n = tr.get("anomalies_detected", 0)
-        return f"✅ Clean (0 found)" if n == 0 else f"🔴 {n} anomalies"
+        return "✅ Clean (0 found)" if n == 0 else f"🔴 {n} anomalies"
 
     orphan_badge    = _test_badge("orphaned_token")
     diverge_badge   = _test_badge("timestamp_divergence")
@@ -3046,8 +3048,8 @@ def _build_audit_markdown(result: dict) -> str:
     lines: list[str] = [
         f"## 🔬 Attribution Data Audit — {today}",
         "",
-        f"| | |",
-        f"|-|-|",
+        "| | |",
+        "|-|-|",
         f"| **Run ID** | `{run_id}` |",
         f"| **Lookback window** | {lookback_days} days |",
         f"| **Total anomalies detected** | {anomaly_count} |",
@@ -3248,7 +3250,7 @@ def _build_audit_markdown(result: dict) -> str:
         "---",
         "",
         f"*Attribution Forensic Verification Engine — Task 37 | Run ID: `{run_id}`*",
-        f"*Anomalies written to `data_attribution_anomalies` · Correction view: `v_attribution_correction_weights`*",
+        "*Anomalies written to `data_attribution_anomalies` · Correction view: `v_attribution_correction_weights`*",
     ]
 
     return "\n".join(lines)

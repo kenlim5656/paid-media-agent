@@ -92,5 +92,11 @@ social = [
     "textblob>=0.18.0",
 ]
 
+[tool.ruff]
+line-length = 120
+
 [tool.ruff.lint]
 select = ["E", "F", "I"]
+# E501/E701 are style-only and the codebase predates the linter; F841 unused
+# locals are documented intent in several generators. Revisit when convenient.
+ignore = ["E501", "E701", "F841"]

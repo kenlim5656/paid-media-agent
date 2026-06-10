@@ -64,7 +64,6 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any
 
 import structlog
 
@@ -648,7 +647,7 @@ def _build_operator_package(
             "All budget shifts require explicit Operator agent approval before execution. "
             "Shifts are expressed as changes to the MODELED spend window — scale to "
             "actual monthly budgets proportionally. Do not execute >1 reallocation cycle "
-            f"per calendar month without a fresh MMM run to avoid compound drift."
+            "per calendar month without a fresh MMM run to avoid compound drift."
         ),
     }
 

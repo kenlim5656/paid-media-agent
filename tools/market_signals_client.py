@@ -74,12 +74,11 @@ import re
 import time
 import uuid
 from collections import Counter
-from datetime import date, datetime, timezone
-from typing import Any
-
-import structlog
+from datetime import datetime, timezone
 
 import anthropic
+import structlog
+
 from config import settings
 from tools import bigquery_client as bq
 from tools.skill_resolver import SkillResolver
@@ -289,6 +288,7 @@ class MarketSignalsClient:
             competitor_name=competitor_name,
             combined_text=combined_text,
             evaluation_prompt=evaluation_prompt,
+            prompt_source=prompt_source,
             category=category,
             signal_ids=[s["signal_id"] for s in signals],
         )
@@ -489,6 +489,7 @@ class MarketSignalsClient:
         competitor_name: str,
         combined_text: str,
         evaluation_prompt: str,
+        prompt_source: str,
         category: str | None,
         signal_ids: list[str],
     ) -> tuple[dict | None, str | None]:
@@ -566,7 +567,7 @@ class MarketSignalsClient:
             ),
             "source_url_count":           len(signal_ids),
             "total_word_count":           word_count,
-            "evaluation_prompt_source":   "private" if _PRIVATE_INTEL_PATH.exists() else "public_fallback",
+            "evaluation_prompt_source":   prompt_source,
             "raw_inference_json":         json.dumps(parsed),
             "capture_timestamp":          now.isoformat(),
         }

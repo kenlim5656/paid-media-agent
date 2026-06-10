@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import random
 import sys
 import uuid
@@ -251,6 +250,7 @@ def _batch_insert(table_name: str, rows: list[dict]) -> int:
     Returns the total count inserted; logs any errors.
     """
     from google.cloud import bigquery as _bigquery
+
     from config import settings as _settings
 
     project  = _settings.gcp_project_id
@@ -1243,7 +1243,7 @@ def main() -> int:
     now   = datetime.now(timezone.utc)
     now_ts = _ts(now)
 
-    print(f"\n  paid-media-agent Sandbox Generator")
+    print("\n  paid-media-agent Sandbox Generator")
     print(f"  Generating {args.days} days of data ending {today.isoformat()} …\n")
 
     # ── 0. Wipe ───────────────────────────────────────────────────────────────

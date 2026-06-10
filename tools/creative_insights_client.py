@@ -17,8 +17,9 @@ Privacy note: ad copy strings are marketing content, not PII. No email, phone,
 or personal data is ever returned or logged from this module.
 """
 
-import structlog
 from datetime import date, timedelta
+
+import structlog
 
 from tools import bigquery_client as bq
 

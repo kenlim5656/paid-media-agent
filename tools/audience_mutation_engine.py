@@ -367,7 +367,6 @@ class AudienceMutationEngine:
         try:
             from tools.meta_client import (
                 add_hashed_emails_to_exclusion_audience,
-                MetaAPIError,
             )
             result = add_hashed_emails_to_exclusion_audience(
                 audience_id=audience_id,
@@ -403,8 +402,6 @@ class AudienceMutationEngine:
         try:
             from tools.google_ads_client import (
                 add_emails_to_customer_match,
-                GoogleAdsAPIError,
-                GoogleAdsSetupError,
             )
             result = add_emails_to_customer_match(
                 customer_id=customer_id,
@@ -447,8 +444,6 @@ class AudienceMutationEngine:
         try:
             from tools.tiktok_ads_client import (
                 add_hashed_emails_to_audience,
-                TikTokAdsError,
-                TikTokSetupError,
             )
             result = add_hashed_emails_to_audience(
                 advertiser_id=advertiser_id,
@@ -491,8 +486,6 @@ class AudienceMutationEngine:
         try:
             from tools.reddit_ads_client import (
                 upload_hashed_emails_to_audience,
-                RedditAdsError,
-                RedditAdsSetupError,
             )
             result = upload_hashed_emails_to_audience(
                 account_id=account_id,

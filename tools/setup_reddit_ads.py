@@ -37,7 +37,6 @@ Reddit developer app registration:
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -105,8 +104,9 @@ def _validate_account_id(account_id: str) -> bool:
 # ── Connection verification ────────────────────────────────────────────────────
 
 def _verify_connection(client_id: str, client_secret: str, refresh_token: str | None, account_ids: list[str]) -> bool:
-    import httpx
     from base64 import b64encode
+
+    import httpx
 
     credentials = b64encode(f"{client_id}:{client_secret}".encode()).decode()
     headers = {

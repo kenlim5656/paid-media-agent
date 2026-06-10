@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import http.server
 import json
-import os
 import secrets
 import sys
 import threading

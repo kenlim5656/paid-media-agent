@@ -10,7 +10,9 @@ Table names are defined here as the single source of truth so they map
 exactly to the paid-media-schema DDL (bigquery/*.sql).
 """
 import uuid
+
 from google.cloud import bigquery
+
 from config import settings
 
 _client: bigquery.Client | None = None
