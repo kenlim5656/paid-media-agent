@@ -92,6 +92,13 @@ social = [
     "textblob>=0.18.0",
 ]
 
+# Explicit package list — setuptools flat-layout auto-discovery refuses to
+# build with multiple top-level packages (breaks `pip install -e .` on a
+# fresh clone; the Docker build only dodged it by installing deps before
+# copying sources).
+[tool.setuptools.packages.find]
+include = ["agents*", "config*", "orchestrator*", "tools*", "deploy*"]
+
 [tool.ruff]
 line-length = 120
 
