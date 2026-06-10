@@ -186,10 +186,19 @@ def run_query(sql: str, params: dict | None = None) -> list[dict]:
     return [dict(row) for row in job.result()]
 
 
-def run_dml(sql: str) -> int:
-    """Execute DML (INSERT/UPDATE/MERGE/DELETE). Returns rows affected."""
+def run_dml(sql: str, params: dict | None = None) -> int:
+    """
+    Execute DML (INSERT/UPDATE/MERGE/DELETE). Returns rows affected.
+    Pass values via `params` (@name placeholders) — never interpolate them.
+    """
     client = get_client()
-    job = client.query(sql)
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter(k, _infer_type(v), v)
+            for k, v in (params or {}).items()
+        ]
+    )
+    job = client.query(sql, job_config=job_config)
     job.result()
     return job.num_dml_affected_rows or 0
 

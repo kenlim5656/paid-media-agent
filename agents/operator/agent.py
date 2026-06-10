@@ -789,17 +789,23 @@ class OperatorAgent(BaseAgent):
     def _update_action_status(self, action_id: str, status: str) -> None:
         now = datetime.now(timezone.utc).isoformat()
         try:
-            bq.run_dml(f"""
+            bq.run_dml(
+                f"""
                 UPDATE {bq.table_ref('operator_action_log')}
-                SET status = '{status}', executed_at = TIMESTAMP '{now}'
-                WHERE action_id = '{action_id}'
-            """)
+                SET status = @status, executed_at = TIMESTAMP(@now)
+                WHERE action_id = @action_id
+                """,
+                params={"status": status, "now": now, "action_id": action_id},
+            )
             # Remove from pending approvals if it's been executed
             if status == "executed":
-                bq.run_dml(f"""
+                bq.run_dml(
+                    f"""
                     DELETE FROM {bq.table_ref('operator_pending_approvals')}
-                    WHERE action_id = '{action_id}'
-                """)
+                    WHERE action_id = @action_id
+                    """,
+                    params={"action_id": action_id},
+                )
         except Exception as exc:
             log.warning("operator.status_update_failed", action_id=action_id, error=str(exc))
 

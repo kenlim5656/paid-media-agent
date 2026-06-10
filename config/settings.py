@@ -90,6 +90,13 @@ class Settings(BaseSettings):
     operator_require_approval: bool = True   # set False only after extended validation
     alert_webhook_url: str = ""             # Slack incoming webhook URL for alerts
 
+    # HTTP auth (Cloud Run app) — verifies the OIDC token Cloud Scheduler / the
+    # MCP proxy sends, in addition to Cloud Run's --no-allow-unauthenticated.
+    http_auth_enabled: bool = True          # set False ONLY for local development
+    http_auth_audience: str = ""            # expected `aud` claim — your Cloud Run URL
+    http_auth_allowed_emails: str = ""      # comma-separated service-account emails
+    #                                         allowed to call /run, /query/*, /action/*
+
     # Monitoring thresholds
     capture_floor_pct: float = 90.0         # alert if any signal capture rate drops below this
     null_field_spike_pct: float = 5.0       # alert if CRM null media fields exceed this %
@@ -209,3 +216,16 @@ def validate_settings() -> None:
                 canonical=canonical,
                 hint=f"{legacy} still works but is deprecated — rename it to {canonical}.",
             )
+
+    if not settings.http_auth_enabled:
+        log.warning(
+            "settings.http_auth_disabled",
+            hint="HTTP_AUTH_ENABLED=false — every route except /health is unauthenticated. "
+                 "Local development only; never deploy like this.",
+        )
+    elif not settings.http_auth_allowed_emails:
+        log.warning(
+            "settings.http_auth_no_email_allowlist",
+            hint="HTTP_AUTH_ALLOWED_EMAILS is empty — any Google-signed identity token "
+                 "passes. Set it to your scheduler/MCP service-account email(s).",
+        )

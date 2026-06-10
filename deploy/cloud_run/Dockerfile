@@ -7,13 +7,15 @@ FROM python:3.11-slim
 
 WORKDIR /app
 COPY pyproject.toml .
-RUN pip install --no-cache-dir -e .
+# [serve] pulls in fastapi + uvicorn — versions pinned in pyproject.toml,
+# the single place dependencies are declared
+RUN pip install --no-cache-dir -e .[serve]
 
 COPY . .
 
-# Cloud Run expects a web server; we use a minimal FastAPI wrapper
-# that accepts POST /run?agent=watchdog|analyst|operator
-RUN pip install --no-cache-dir fastapi uvicorn[standard]
+# Run as a non-root user — the agent needs no filesystem writes at runtime
+RUN useradd --create-home --uid 1001 agent && chown -R agent:agent /app
+USER agent
 
 EXPOSE 8080
 CMD ["uvicorn", "deploy.cloud_run.app:app", "--host", "0.0.0.0", "--port", "8080"]

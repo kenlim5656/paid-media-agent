@@ -278,6 +278,7 @@ gcloud scheduler jobs create http attribution-watchdog \
   --uri="$AGENT_URL/run?agent=watchdog" \
   --http-method=POST \
   --oidc-service-account-email=paid-media-agent@YOUR_PROJECT_ID.iam.gserviceaccount.com \
+  --oidc-token-audience="$AGENT_URL" \
   --location=us-central1
 
 # Analyst: 6am UTC daily
@@ -286,6 +287,7 @@ gcloud scheduler jobs create http attribution-analyst \
   --uri="$AGENT_URL/run?agent=analyst" \
   --http-method=POST \
   --oidc-service-account-email=paid-media-agent@YOUR_PROJECT_ID.iam.gserviceaccount.com \
+  --oidc-token-audience="$AGENT_URL" \
   --location=us-central1
 
 # Operator: 8am UTC daily (after analyst)
@@ -294,6 +296,7 @@ gcloud scheduler jobs create http attribution-operator \
   --uri="$AGENT_URL/run?agent=operator" \
   --http-method=POST \
   --oidc-service-account-email=paid-media-agent@YOUR_PROJECT_ID.iam.gserviceaccount.com \
+  --oidc-token-audience="$AGENT_URL" \
   --location=us-central1
 ```
 
@@ -313,9 +316,25 @@ execution-tool path: `OPERATOR_REQUIRE_APPROVAL` queues the action in
 enforce `MAX_BUDGET_SHIFT_PCT`. Set `PAID_MEDIA_AGENT_URL` in the MCP config
 to the Cloud Run URL to enable them.
 
-> The service is deployed with `--no-allow-unauthenticated`, so callers must
-> present a Google-signed identity token. In-handler OIDC verification is
-> tracked separately (Phase 2 of the review).
+**Authentication:** in addition to Cloud Run's `--no-allow-unauthenticated`,
+the app verifies the OIDC identity token in-process on every route except
+`/health`. Set these env vars on the Cloud Run service:
+
+```bash
+gcloud run services update paid-media-agent --region us-central1 \
+  --set-env-vars="HTTP_AUTH_AUDIENCE=$AGENT_URL,HTTP_AUTH_ALLOWED_EMAILS=paid-media-agent@YOUR_PROJECT_ID.iam.gserviceaccount.com"
+```
+
+- `HTTP_AUTH_AUDIENCE` — the expected `aud` claim; use the Cloud Run URL
+  (Cloud Scheduler's `--oidc-token-audience` defaults to the request URL —
+  set it explicitly to the service URL so the claim matches).
+- `HTTP_AUTH_ALLOWED_EMAILS` — comma-separated service-account emails allowed
+  to call the service (the scheduler SA, plus whatever identity your MCP
+  deployment uses). Empty = any Google-signed token passes (warned at startup).
+- `HTTP_AUTH_ENABLED=false` — local development only; never deploy with this.
+
+For local testing (`uvicorn deploy.cloud_run.app:app`), set
+`HTTP_AUTH_ENABLED=false` in `.env`.
 
 ### Step 6: Install skills and activate agent
 

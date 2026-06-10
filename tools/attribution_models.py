@@ -367,7 +367,7 @@ def write_model_results(
     now = datetime.now(timezone.utc).isoformat()
 
     # Clear any existing rows for this run
-    bq.run_dml(f"DELETE FROM {bq.table_ref('attribution_results')} WHERE run_id = '{run_id}'")
+    bq.run_dml(f"DELETE FROM {bq.table_ref('attribution_results')} WHERE run_id = @run_id", params={"run_id": run_id})
 
     # Build rows
     result_rows = []
@@ -480,7 +480,7 @@ def write_model_results(
         )
         summary_rows.append(s)
 
-    bq.run_dml(f"DELETE FROM {bq.table_ref('attribution_channel_summary')} WHERE run_id = '{run_id}'")
+    bq.run_dml(f"DELETE FROM {bq.table_ref('attribution_channel_summary')} WHERE run_id = @run_id", params={"run_id": run_id})
     for i in range(0, len(summary_rows), chunk_size):
         bq.insert_rows("attribution_channel_summary", summary_rows[i:i + chunk_size])
 

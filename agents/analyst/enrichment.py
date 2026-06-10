@@ -229,10 +229,11 @@ class EnrichmentJob:
                 f"""
                 SELECT company_id
                 FROM {bq.table_ref('company_profiles')}
-                WHERE company_domain = '{domain}'
+                WHERE company_domain = @domain
                   AND is_active = TRUE
                 LIMIT 1
-                """
+                """,
+                params={"domain": domain},
             )
             if rows:
                 return str(rows[0]["company_id"])
@@ -263,10 +264,11 @@ class EnrichmentJob:
             FROM {bq.table_ref('company_sessions')} cs
             JOIN {bq.table_ref('company_profiles')} cp
               ON cp.company_domain = cs.company_domain AND cp.is_active = TRUE
-            WHERE cs.company_domain = '{domain}'
-              AND cs.session_date >= DATE '{start_30d}'
+            WHERE cs.company_domain = @domain
+              AND cs.session_date >= DATE(@start_30d)
             GROUP BY cp.company_id, cp.company_name
-            """
+            """,
+            params={"domain": domain, "start_30d": start_30d},
         )
 
         if not rows:

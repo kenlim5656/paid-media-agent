@@ -21,6 +21,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Cloud Run HTTP wrapper (deploy/cloud_run/app.py).
+# Usage: pip install 'paid-media-agent[serve]'
+serve = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+]
 dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",

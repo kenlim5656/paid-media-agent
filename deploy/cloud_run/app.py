@@ -17,13 +17,22 @@ The /query and /action routes are the server side of the paid-media-mcp
 integration (PAID_MEDIA_AGENT_URL). Action routes run through the Operator's
 log_proposed_action → execution-tool path, so approval gating and budget-cap
 guardrails apply identically to HTTP-initiated and autonomous actions.
+
+Auth: every route except /health requires a Google-signed OIDC identity token
+(`Authorization: Bearer <id-token>`), verified in-process against Google's
+signing keys — defense-in-depth on top of Cloud Run's
+--no-allow-unauthenticated. Configure via HTTP_AUTH_AUDIENCE (the Cloud Run
+URL) and HTTP_AUTH_ALLOWED_EMAILS (caller service accounts); disable for
+local development only with HTTP_AUTH_ENABLED=false.
 """
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from config import validate_settings
+from config import settings, validate_settings
 from orchestrator import http_actions
 from orchestrator.runner import run_watchdog, run_analyst, run_operator
 
@@ -35,6 +44,55 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Attribution Agent Runner", lifespan=lifespan)
+
+
+# ── OIDC verification ───────────────────────────────────────────────────────────
+
+def _verify_id_token(token: str) -> dict:
+    """
+    Verify a Google-signed OIDC identity token (signature, expiry, audience)
+    and enforce the service-account email allowlist. Raises ValueError on any
+    failure — callers translate that to 401.
+    """
+    from google.auth.transport import requests as google_requests
+    from google.oauth2 import id_token as google_id_token
+
+    claims = google_id_token.verify_oauth2_token(
+        token,
+        google_requests.Request(),
+        audience=settings.http_auth_audience or None,
+    )
+    allowed = [e.strip() for e in settings.http_auth_allowed_emails.split(",") if e.strip()]
+    if allowed:
+        email = claims.get("email", "")
+        if not claims.get("email_verified") or email not in allowed:
+            raise ValueError(f"Caller '{email}' is not in HTTP_AUTH_ALLOWED_EMAILS")
+    return claims
+
+
+@app.middleware("http")
+async def require_oidc(request: Request, call_next):
+    if request.url.path == "/health" or not settings.http_auth_enabled:
+        return await call_next(request)
+
+    header = request.headers.get("authorization", "")
+    if not header.startswith("Bearer "):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Missing 'Authorization: Bearer <id-token>' header"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        # verify_oauth2_token fetches Google's certs synchronously — keep it
+        # off the event loop
+        await run_in_threadpool(_verify_id_token, header.removeprefix("Bearer "))
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": f"Invalid identity token: {exc}"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return await call_next(request)
 
 
 # ── Request models ──────────────────────────────────────────────────────────────
