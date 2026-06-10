@@ -21,13 +21,18 @@ class BaseAgent:
     tools: list[dict] = []
 
     def __init__(self) -> None:
-        self.client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        # timeout: a hung API call must not block the Cloud Run instance —
+        # the SDK raises APITimeoutError after agent_api_timeout_seconds.
+        self.client = anthropic.Anthropic(
+            api_key=settings.anthropic_api_key,
+            timeout=settings.agent_api_timeout_seconds,
+        )
 
     def run(self, task: str) -> str:
         messages: list[dict] = [{"role": "user", "content": task}]
         log.info("agent.start", agent=self.name, task=task[:120])
 
-        while True:
+        for iteration in range(settings.agent_max_iterations):
             response = self.client.messages.create(
                 model=settings.claude_model,
                 max_tokens=4096,
@@ -65,6 +70,18 @@ class BaseAgent:
                 })
 
             messages.append({"role": "user", "content": tool_results})
+
+        # Loop cap reached — return a truthful failure instead of spinning
+        log.error(
+            "agent.max_iterations_reached",
+            agent=self.name,
+            max_iterations=settings.agent_max_iterations,
+        )
+        return (
+            f"ERROR: {self.name} agent hit the {settings.agent_max_iterations}-iteration "
+            "cap (AGENT_MAX_ITERATIONS) without reaching end_turn. The run was aborted; "
+            "partial tool effects may have been applied — review the logs."
+        )
 
     def _dispatch(self, tool_name: str, inputs: dict) -> dict:
         handler = getattr(self, f"_tool_{tool_name}", None)

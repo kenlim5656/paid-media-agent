@@ -345,6 +345,62 @@ class CausalImpactEngine:
             ratio=round(ratio, 2),
         )
 
+    def _validate_inputs(self) -> None:
+        """
+        Reject NaN/inf and malformed shapes BEFORE HMC. A single NaN propagates
+        through the posterior silently and HMC returns garbage with no error,
+        so these are hard failures with actionable messages, not warnings.
+        """
+        for name, arr in (("y_pre", self.data.y_pre), ("y_post", self.data.y_post)):
+            a = np.asarray(arr, dtype=float)
+            if a.ndim != 1:
+                raise ValueError(
+                    f"{name} must be a 1-D series, got shape {a.shape}. "
+                    "Pass one observation per day."
+                )
+            if a.size == 0:
+                raise ValueError(f"{name} is empty — no observations in the window.")
+            bad = ~np.isfinite(a)
+            if bad.any():
+                idx = np.flatnonzero(bad)[:5].tolist()
+                raise ValueError(
+                    f"{name} contains {int(bad.sum())} NaN/inf value(s) "
+                    f"(first indices: {idx}). Clean or impute the source series — "
+                    "HMC produces silently invalid posteriors on non-finite input."
+                )
+
+        for name, mat, expected_rows in (
+            ("control_pre", self.data.control_pre, self.data.n_pre),
+            ("control_post", self.data.control_post, self.data.n_post),
+        ):
+            if mat is None:
+                continue
+            m = np.asarray(mat, dtype=float)
+            if m.ndim != 2:
+                raise ValueError(
+                    f"{name} must be a 2-D [T, K] matrix, got shape {m.shape}."
+                )
+            if m.shape[0] != expected_rows:
+                raise ValueError(
+                    f"{name} has {m.shape[0]} rows but the target series has "
+                    f"{expected_rows} observations — control series must align 1:1 by date."
+                )
+            if not np.isfinite(m).all():
+                raise ValueError(
+                    f"{name} contains NaN/inf values. Clean the control series first."
+                )
+
+        cp, cq = self.data.control_pre, self.data.control_post
+        if (cp is None) != (cq is None):
+            raise ValueError(
+                "control_pre and control_post must both be provided or both be None."
+            )
+        if cp is not None and cq is not None and cp.shape[1] != cq.shape[1]:
+            raise ValueError(
+                f"control_pre has {cp.shape[1]} columns but control_post has "
+                f"{cq.shape[1]} — the covariate sets must match."
+            )
+
     # ── Control covariate regression ───────────────────────────────────────────
 
     def _detrend_by_controls(
@@ -548,6 +604,7 @@ class CausalImpactEngine:
         tfp_sts = tfp_jax.sts
 
         self._validate_ratio()
+        self._validate_inputs()
 
         t0 = time.time()
 

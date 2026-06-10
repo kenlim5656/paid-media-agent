@@ -21,6 +21,7 @@ import hashlib
 import json
 import structlog
 import httpx
+from tools.http_retry import get_with_retry
 from config import settings
 
 log = structlog.get_logger()
@@ -74,7 +75,7 @@ def list_dmp_segments() -> list[dict]:
     """List all DMP segments for the partner account."""
     _check_credentials()
     url = f"{LINKEDIN_API_BASE}/dmpSegments"
-    resp = httpx.get(
+    resp = get_with_retry(
         url,
         headers=_headers(),
         params={"q": "account", "account": f"urn:li:sponsoredAccount:{settings.linkedin_partner_id}"},
@@ -233,7 +234,7 @@ def get_campaign(campaign_id: str) -> dict:
     """Fetch campaign details including budget."""
     _check_credentials()
     url = f"{LINKEDIN_API_BASE}/adCampaigns/{campaign_id}"
-    resp = httpx.get(
+    resp = get_with_retry(
         url,
         headers=_headers(),
         params={
@@ -326,7 +327,7 @@ def get_campaign_analytics(
     end = end_date.replace("-", "/")
 
     url = f"{LINKEDIN_API_BASE}/adAnalytics"
-    resp = httpx.get(
+    resp = get_with_retry(
         url,
         headers=_headers(),
         params={

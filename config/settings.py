@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     # Anthropic
     anthropic_api_key: str
     claude_model: str = "claude-opus-4-8"
+    agent_max_iterations: int = 50          # cap on tool-use loop turns per run
+    agent_api_timeout_seconds: float = 300.0  # per-call timeout on messages.create()
 
     # GCP / BigQuery
     # Canonical env vars (shared with paid-media-mcp): PAID_MEDIA_GCP_PROJECT,

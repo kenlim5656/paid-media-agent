@@ -19,6 +19,7 @@ import hashlib
 import json
 import structlog
 import httpx
+from tools.http_retry import get_with_retry
 from config import settings
 
 log = structlog.get_logger()
@@ -61,7 +62,7 @@ def get_custom_audiences() -> list[dict]:
     """List all custom audiences in the ad account."""
     _check_credentials()
     url = f"{META_API_BASE}/{settings.meta_ad_account_id}/customaudiences"
-    resp = httpx.get(
+    resp = get_with_retry(
         url,
         params={
             "fields": "id,name,approximate_count,description,subtype",
@@ -168,7 +169,7 @@ def get_campaign(campaign_id: str) -> dict:
     """Fetch campaign details including current budget."""
     _check_credentials()
     url = f"{META_API_BASE}/{campaign_id}"
-    resp = httpx.get(
+    resp = get_with_retry(
         url,
         params={
             "fields": "id,name,status,objective,daily_budget,lifetime_budget,budget_remaining",
@@ -184,7 +185,7 @@ def get_ad_set(ad_set_id: str) -> dict:
     """Fetch ad set details including current budget and targeting."""
     _check_credentials()
     url = f"{META_API_BASE}/{ad_set_id}"
-    resp = httpx.get(
+    resp = get_with_retry(
         url,
         params={
             "fields": "id,name,status,daily_budget,lifetime_budget,optimization_goal,campaign_id",
@@ -308,7 +309,7 @@ def get_campaign_insights(
     """
     _check_credentials()
     url = f"{META_API_BASE}/{campaign_id}/insights"
-    resp = httpx.get(
+    resp = get_with_retry(
         url,
         params={
             "fields": "impressions,clicks,spend,actions,action_values,reach,frequency,cpc,cpm,ctr",

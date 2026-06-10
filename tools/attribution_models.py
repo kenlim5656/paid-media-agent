@@ -321,7 +321,14 @@ def compute_markov(paths: list[dict]) -> dict[str, float]:
 
     base_rate = conversion_rate(exclude_channel=None)
     if base_rate == 0:
-        base_rate = 1e-9  # avoid division by zero
+        # Zero baseline conversion probability means there is nothing to
+        # attribute — dividing by an epsilon would manufacture removal effects
+        # out of noise. Return an explicit empty result instead.
+        raise ValueError(
+            "Markov removal-effect computation aborted: the baseline conversion "
+            "rate is 0 (no path in the dataset reaches a conversion). "
+            "Check the conversion_events join/window before re-running."
+        )
 
     # All unique channels (excluding special states)
     channels = sorted(
@@ -421,7 +428,15 @@ def write_model_results(
     for i in range(0, len(result_rows), chunk_size):
         chunk = result_rows[i:i + chunk_size]
         errors = bq.insert_rows("attribution_results", chunk)
-        total_errors += len(errors)
+        if errors:
+            total_errors += len(errors)
+            log.error(
+                "attribution_models.insert_errors",
+                run_id=run_id,
+                chunk_start=i,
+                error_count=len(errors),
+                first_errors=str(errors[:3])[:500],
+            )
 
     log.info("attribution_models.results_written", run_id=run_id, rows=len(result_rows), errors=total_errors)
 
@@ -488,8 +503,9 @@ def write_model_results(
     return {
         "run_id":             run_id,
         "model_name":         model_name,
+        "status":             "partial" if total_errors else "complete",
         "paths_modeled":      len(paths),
-        "result_rows_written": len(result_rows),
+        "result_rows_written": len(result_rows) - total_errors,
         "channel_rows_written": len(summary_rows),
         "errors":             total_errors,
         "top_channels":       [

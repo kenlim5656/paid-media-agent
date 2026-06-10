@@ -208,6 +208,8 @@ CREATE TABLE IF NOT EXISTS `{project}.{dataset}.operator_action_log`
     -- "proposed"        — staged, not yet executed (pending_approval mode)
     -- "approved"        — approved by human, awaiting execution
     -- "executed"        — successfully applied to the platform
+    -- "partial"         — multi-channel action: some channels applied, others failed
+    --                     (see operator_action_log.platform_response for detail)
     -- "failed"          — execution attempted but failed
     -- "rejected"        — rejected by human reviewer
     -- "superseded"      — a newer action replaced this one before execution

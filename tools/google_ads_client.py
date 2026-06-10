@@ -187,12 +187,21 @@ def _hash_email(email: str) -> str:
     return hashlib.sha256(email.lower().strip().encode()).hexdigest()
 
 
+# Hard ceiling on a single GAQL stream — without it a stalled gRPC stream
+# holds the Cloud Run instance until the platform request timeout.
+GAQL_TIMEOUT_SECONDS = 120.0
+
+
 def _run_gaql(customer_id: str, query: str) -> list[Any]:
     """Execute a GAQL query and return the list of GoogleAdsRow results."""
     client = _get_client()
     ga_service = client.get_service("GoogleAdsService")
     try:
-        stream = ga_service.search_stream(customer_id=customer_id, query=query)
+        stream = ga_service.search_stream(
+            customer_id=customer_id,
+            query=query,
+            timeout=GAQL_TIMEOUT_SECONDS,
+        )
         rows = []
         for batch in stream:
             rows.extend(batch.results)

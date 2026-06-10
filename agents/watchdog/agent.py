@@ -154,8 +154,22 @@ class WatchdogAgent(BaseAgent):
                 with_signal = int(row.get("with_signal", 0))
                 rate = round((with_signal / max(total, 1)) * 100, 2)
             except Exception as exc:
-                log.warning("watchdog.capture_rate_error", namespace=ns["namespace_id"], error=str(exc))
-                total, with_signal, rate = 0, 0, 0.0
+                # A failed audit query must NOT read as "no anomalies" — during a
+                # BigQuery outage that would make the watchdog go green exactly
+                # when monitoring is blind. Surface it as a failed check.
+                log.error("watchdog.capture_rate_error", namespace=ns["namespace_id"], error=str(exc))
+                results.append({
+                    "namespace_id":      ns["namespace_id"],
+                    "platform":          ns["platform"],
+                    "total_events":      0,
+                    "events_with_signal": 0,
+                    "capture_rate_pct":  None,
+                    "threshold_pct":     floor,
+                    "ok":                False,
+                    "failed":            True,
+                    "error":             str(exc)[:300],
+                })
+                continue
 
             results.append({
                 "namespace_id":      ns["namespace_id"],
@@ -165,13 +179,17 @@ class WatchdogAgent(BaseAgent):
                 "capture_rate_pct":  rate,
                 "threshold_pct":     floor,
                 "ok":                rate >= floor or total == 0,
+                "failed":            False,
             })
 
-        breaches = [r for r in results if not r["ok"] and r["total_events"] > 0]
+        breaches = [r for r in results if not r["ok"] and (r["total_events"] > 0 or r.get("failed"))]
+        query_failures = sum(1 for r in results if r.get("failed"))
         return {
             "hours_sampled": hours_back,
             "namespaces_checked": len(results),
             "breaches": len(breaches),
+            "query_failures": query_failures,
+            "monitoring_degraded": query_failures > 0,
             "results": results,
         }
 

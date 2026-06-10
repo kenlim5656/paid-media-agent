@@ -614,8 +614,14 @@ def load_meridian_data(
                             "or run audit_data_attribution_cleanliness for a full report."
                         ),
                     )
-        except Exception:
-            pass  # passive check — never block the MMM run
+        except Exception as exc:
+            # Passive check — never block the MMM run, but a failed contamination
+            # check is not the same as a clean one. Say so.
+            log.warning(
+                "meridian_loader.attribution_contamination_check_failed",
+                error=str(exc),
+                note="Could not verify attribution cleanliness — treat the KPI tensor as unaudited.",
+            )
 
     log.info(
         "meridian_loader.complete",

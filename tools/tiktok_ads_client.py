@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from tools.http_retry import get_with_retry
 import structlog
 
 from config import settings
@@ -494,7 +495,7 @@ def get_campaign(advertiser_id: str, campaign_id: str) -> dict:
     """
     access_token, _ = _get_context()
     url = f"{TIKTOK_API_BASE}/campaign/get/"
-    resp = httpx.get(
+    resp = get_with_retry(
         url,
         headers=_headers(access_token),
         params={
@@ -662,7 +663,7 @@ def list_custom_audiences(advertiser_id: str) -> list[dict]:
     """List all custom audiences for the advertiser."""
     access_token, _ = _get_context()
     url = f"{TIKTOK_API_BASE}/dmp/custom_audience/list/"
-    resp = httpx.get(
+    resp = get_with_retry(
         url,
         headers=_headers(access_token),
         params={

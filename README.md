@@ -147,7 +147,7 @@ Writes to: `attribution_results`, `attribution_channel_summary`, `analyst_insigh
 Reads attribution results and acts. Two primary action classes:
 
 **Budget Reallocation** (`execute_system_budget_reallocation`)
-Ingests a `task27.v1` MMM optimization package from the Analyst and executes budget mutations across all five platforms. The pre-flight guardrail sweep is all-or-nothing — if any single check fails, zero mutations are applied and the full error list is returned for human review before any retry.
+Ingests a `task27.v1` MMM optimization package from the Analyst and executes budget mutations across all five platforms. The **pre-flight** guardrail sweep is all-or-nothing — if any single check fails, zero mutations are applied and the full error list is returned for human review before any retry. The **execution loop** that follows is sequential per channel and is *not* transactional: platform APIs have no cross-platform rollback, so if channel 3 of 5 fails, channels 1–2 stay applied and 4–5 still execute. The action's terminal status in `operator_action_log` records this honestly — `executed` (all channels applied), `partial` (some applied, some failed — per-channel detail in the result payload), or `failed` (nothing applied). A `partial` outcome requires human review: re-running the package is not safe until the failed channels are reconciled.
 
 **Audience Suppression** (`sync_evolving_lookalike_seeds`)
 Pushes pipeline account lists to DV360, Meta, and LinkedIn to suppress in-flight accounts from top-of-funnel acquisition spend. Prevents wasted impressions on companies already in active sales cycles.

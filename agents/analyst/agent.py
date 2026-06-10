@@ -1150,7 +1150,15 @@ class AnalystAgent(BaseAgent):
 
     def _tool_run_bigquery_query(self, sql: str, params: dict | None = None) -> dict:
         rows = bq.run_query(sql, params)
-        return {"rows": rows[:200], "total_rows": len(rows)}
+        truncated = len(rows) > 200
+        return {
+            "rows": rows[:200],
+            "total_rows": len(rows),
+            "returned_rows": min(len(rows), 200),
+            "truncated": truncated,
+            **({"note": "Result truncated to 200 rows — add LIMIT/filters to see the rest."}
+               if truncated else {}),
+        }
 
     def _tool_start_attribution_run(
         self,

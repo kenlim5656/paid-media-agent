@@ -9,6 +9,7 @@ Runs daily after the Analyst. Reads attribution_channel_summary and acts on insi
 All write actions are logged to operator_action_log and operator_pending_approvals.
 Platform-agnostic: supports GMP, Meta, LinkedIn, Google Ads, TikTok via platform adapters.
 """
+import hashlib
 import json
 import textwrap
 import structlog
@@ -641,9 +642,15 @@ class OperatorAgent(BaseAgent):
                     "note": f"Manual: add {len(domains)} domains to exclusion list in {platform} UI.",
                 }
 
-            self._update_action_status(action_id, "executed")
+            action_log_updated = self._update_action_status(action_id, "executed")
             log.info("operator.suppression_executed", platform=platform, domains=len(domains))
-            return {**result, "action_id": action_id, "domain_count": len(domains), "platform": platform}
+            return {
+                **result,
+                "action_id": action_id,
+                "domain_count": len(domains),
+                "platform": platform,
+                "action_log_updated": action_log_updated,
+            }
 
         except (ApprovalRequiredError, MetaAPIError, LinkedInAPIError,
                 GoogleAdsAPIError, GoogleAdsSetupError,
@@ -771,9 +778,9 @@ class OperatorAgent(BaseAgent):
                     "note": f"Manual: move ${amount_usd} from {source_entity_id} to {target_entity_id} in {platform} UI.",
                 }
 
-            self._update_action_status(action_id, "executed")
+            action_log_updated = self._update_action_status(action_id, "executed")
             log.info("operator.budget_reallocated", platform=platform, amount_usd=amount_usd)
-            return {**result, "action_id": action_id}
+            return {**result, "action_id": action_id, "action_log_updated": action_log_updated}
 
         except (ApprovalRequiredError, MetaAPIError, LinkedInAPIError,
                 GoogleAdsAPIError, GoogleAdsSetupError, GoogleAdsBudgetGuardrailError,
@@ -786,7 +793,97 @@ class OperatorAgent(BaseAgent):
                 "next_step": "Review pending approval in get_pending_approvals (MCP) or operator_pending_approvals (BQ).",
             }
 
-    def _update_action_status(self, action_id: str, status: str) -> None:
+    def _find_executed_package(self, package_hash: str) -> dict | None:
+        """
+        Return the most recent executed/partial record for this task27 package
+        hash, or None. Raises on query failure — the caller fails closed.
+        """
+        rows = bq.run_query(
+            f"""
+            SELECT action_id, status, CAST(executed_at AS STRING) AS executed_at
+            FROM {bq.table_ref('operator_action_log')}
+            WHERE action_type = 'budget_reallocation'
+              AND status IN ('executed', 'partial')
+              AND guardrail_notes = @notes
+            ORDER BY executed_at DESC
+            LIMIT 1
+            """,
+            params={"notes": f"package_hash={package_hash}"},
+        )
+        return rows[0] if rows else None
+
+    def _record_package_execution(
+        self,
+        action_id: str,
+        package_hash: str,
+        terminal_status: str,
+        mmm_run_id: str,
+        executed_count: int,
+        failed_count: int,
+    ) -> bool:
+        """
+        Write the idempotency record as a NEW streamed row (rows in BigQuery's
+        streaming buffer cannot be UPDATEd, so amending the original action row
+        is not reliable within ~90 minutes of its insert).
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        row = {
+            "action_id":             bq.new_uuid(),
+            "action_type":           "budget_reallocation",
+            "platform":              "multi",
+            "platform_entity_type":  None,
+            "platform_entity_id":    mmm_run_id,
+            "campaign_id":           None,
+            "field_changed":         "daily_budget",
+            "value_before":          None,
+            "value_after":           f"executed={executed_count},failed={failed_count}",
+            "change_magnitude":      None,
+            "change_magnitude_pct":  None,
+            "rationale":             f"task27 package execution record (parent action {action_id})",
+            "insight_id":            None,
+            "attribution_run_id":    None,
+            "execution_mode":        "autonomous",
+            "status":                terminal_status,
+            "guardrail_check_passed": True,
+            "guardrail_notes":       f"package_hash={package_hash}",
+            "requires_approval":     False,
+            "approved_by":           None,
+            "approved_at":           None,
+            "rejected_by":           None,
+            "rejected_at":           None,
+            "rejection_reason":      None,
+            "proposed_at":           now,
+            "executed_at":           now,
+            "rolled_back_at":        None,
+            "platform_response":     None,
+        }
+        try:
+            errors = bq.insert_rows("operator_action_log", [row])
+            if errors:
+                log.error(
+                    "operator.idempotency_record_failed",
+                    action_id=action_id,
+                    package_hash=package_hash,
+                    errors=str(errors)[:500],
+                )
+                return False
+            return True
+        except Exception as exc:
+            log.error(
+                "operator.idempotency_record_failed",
+                action_id=action_id,
+                package_hash=package_hash,
+                error=str(exc),
+            )
+            return False
+
+    def _update_action_status(self, action_id: str, status: str) -> bool:
+        """
+        Set the terminal status on operator_action_log. Returns False (and logs
+        an error) if the audit write fails — callers must surface that to the
+        result payload so a platform mutation never silently lacks its audit
+        record.
+        """
         now = datetime.now(timezone.utc).isoformat()
         try:
             bq.run_dml(
@@ -797,8 +894,8 @@ class OperatorAgent(BaseAgent):
                 """,
                 params={"status": status, "now": now, "action_id": action_id},
             )
-            # Remove from pending approvals if it's been executed
-            if status == "executed":
+            # Remove from pending approvals once the action reaches a terminal state
+            if status in ("executed", "partial"):
                 bq.run_dml(
                     f"""
                     DELETE FROM {bq.table_ref('operator_pending_approvals')}
@@ -806,8 +903,15 @@ class OperatorAgent(BaseAgent):
                     """,
                     params={"action_id": action_id},
                 )
+            return True
         except Exception as exc:
-            log.warning("operator.status_update_failed", action_id=action_id, error=str(exc))
+            log.error(
+                "operator.status_update_failed",
+                action_id=action_id,
+                status=status,
+                error=str(exc),
+            )
+            return False
 
     # ── Creative Brief Tool ───────────────────────────────────────────────────
 
@@ -1222,6 +1326,49 @@ class OperatorAgent(BaseAgent):
         )
         mmm_run_id: str = execution_package.get("mmm_run_id", "unknown")
 
+        # ── 1.5 Idempotency guard ─────────────────────────────────────────────
+        # A scheduler retry or double cron fire must not apply the same task27
+        # package twice. Every execution that mutates at least one channel
+        # writes a record keyed by the package's SHA-256; replays return the
+        # prior outcome instead of mutating again. The check fails CLOSED: if
+        # the lookup itself errors, we refuse to move money blind.
+        package_hash = _hash_execution_package(execution_package)
+        try:
+            prior = self._find_executed_package(package_hash)
+        except Exception as exc:
+            return {
+                "action_id": action_id,
+                "executed":  False,
+                "reason": (
+                    f"Idempotency check against operator_action_log failed ({exc}). "
+                    "Refusing to execute budget mutations without replay protection — retry "
+                    "once BigQuery is reachable."
+                ),
+            }
+        if prior:
+            log.warning(
+                "operator.budget_reallocation.replay_blocked",
+                action_id=action_id,
+                package_hash=package_hash,
+                prior_action_id=prior.get("action_id"),
+                prior_status=prior.get("status"),
+            )
+            return {
+                "action_id":        action_id,
+                "executed":         False,
+                "replay_blocked":   True,
+                "package_hash":     package_hash,
+                "prior_action_id":  prior.get("action_id"),
+                "prior_status":     prior.get("status"),
+                "prior_executed_at": prior.get("executed_at"),
+                "reason": (
+                    "This exact task27 package was already executed "
+                    f"(action {prior.get('action_id')}, status '{prior.get('status')}'). "
+                    "Re-applying it could compound budget shifts. Generate a fresh "
+                    "optimization package if a new reallocation is intended."
+                ),
+            }
+
         # ── 2. Pre-flight guardrail sweep (all-or-nothing) ────────────────────
         preflight_errors: list[str] = []
 
@@ -1370,14 +1517,37 @@ class OperatorAgent(BaseAgent):
 
             results.append(tx)
 
-            # Update BQ action log for each successfully executed channel
-            if tx["status"] == "executed":
-                self._update_action_status(action_id, "executed")
-
-        # ── 4. Summary ────────────────────────────────────────────────────────
+        # ── 4. Summary + single terminal status ──────────────────────────────
         executed_count  = sum(1 for r in results if r["status"] == "executed")
         failed_count    = sum(1 for r in results if r["status"] == "failed")
         skipped_count   = sum(1 for r in results if r["status"] == "unsupported")
+
+        # Pre-flight is all-or-nothing, but the execution loop is not: a
+        # channel can fail after earlier channels already applied. Record ONE
+        # honest terminal status for the whole action instead of stamping
+        # "executed" per channel — "partial" means some budgets moved and some
+        # did not, and the per-channel detail is in `results`.
+        if executed_count and not failed_count:
+            terminal_status = "executed"
+        elif executed_count and failed_count:
+            terminal_status = "partial"
+        else:
+            terminal_status = "failed"
+        action_log_updated = self._update_action_status(action_id, terminal_status)
+
+        # Record the package hash whenever anything mutated, so a replay of the
+        # same package is blocked. Fully-failed runs are NOT recorded — they
+        # applied nothing and stay retryable.
+        idempotency_recorded = True
+        if executed_count:
+            idempotency_recorded = self._record_package_execution(
+                action_id=action_id,
+                package_hash=package_hash,
+                terminal_status=terminal_status,
+                mmm_run_id=mmm_run_id,
+                executed_count=executed_count,
+                failed_count=failed_count,
+            )
 
         markdown_summary = _build_budget_reallocation_markdown(
             mmm_run_id=mmm_run_id,
@@ -1396,12 +1566,18 @@ class OperatorAgent(BaseAgent):
             executed=executed_count,
             failed=failed_count,
             skipped=skipped_count,
+            terminal_status=terminal_status,
+            action_log_updated=action_log_updated,
         )
 
         return {
             "action_id":              action_id,
             "mmm_run_id":             mmm_run_id,
             "schema_version":         schema_version,
+            "package_hash":           package_hash,
+            "terminal_status":        terminal_status,
+            "action_log_updated":     action_log_updated,
+            "idempotency_recorded":   idempotency_recorded,
             "total_recommendations":  len(results),
             "executed":               executed_count,
             "failed":                 failed_count,
@@ -1409,6 +1585,14 @@ class OperatorAgent(BaseAgent):
             "results":                results,
             "markdown_summary":       markdown_summary,
         }
+
+
+def _hash_execution_package(execution_package: dict) -> str:
+    """Stable SHA-256 of a task27 package — the idempotency key for execution."""
+    canonical = json.dumps(
+        execution_package, sort_keys=True, separators=(",", ":"), default=str
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 # ── Markdown builders (module-level, pure formatting) ────────────────────────

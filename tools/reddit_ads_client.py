@@ -52,6 +52,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from tools.http_retry import get_with_retry
 import structlog
 
 from config import settings
@@ -438,7 +439,7 @@ def _get_reports(
     # httpx accepts list-of-tuples for repeated query params
     _BUCKET.acquire()
     url = f"{REDDIT_ADS_API_BASE}{path}"
-    resp = httpx.get(
+    resp = get_with_retry(
         url,
         headers=_headers(access_token),
         params=params,
@@ -450,7 +451,7 @@ def _get_reports(
         log.warning("reddit_ads.reports.rate_limited", account=account_id, retry_after=retry_after)
         time.sleep(retry_after)
         _BUCKET.acquire()
-        resp = httpx.get(url, headers=_headers(access_token), params=params, timeout=60)
+        resp = get_with_retry(url, headers=_headers(access_token), params=params, timeout=60)
 
     if resp.status_code >= 400:
         try:
