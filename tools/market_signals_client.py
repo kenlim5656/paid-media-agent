@@ -1,7 +1,7 @@
-# Copyright 2026 @arcticgreyy. All rights reserved.
+# Copyright 2026 @kenlim5656. All rights reserved.
 # Licensed under the Business Source License 1.1 (BSL 1.1)
 # Persistent Attribution Required. See /LICENSE and /NOTICE for terms.
-# Central Suite Repository: https://github.com/arcticgreyy/paid-media-suite
+# Central Suite Repository: https://github.com/kenlim5656/paid-media-suite
 
 """
 Market Signals Client — competitive intelligence ingestion engine (Task 36).
@@ -443,7 +443,7 @@ class MarketSignalsClient:
         headers = {
             "User-Agent": (
                 "paid-media-agent/1.0 market-signals-client "
-                "(competitive intelligence; +https://github.com/arcticgreyy/paid-media-suite)"
+                "(competitive intelligence; +https://github.com/kenlim5656/paid-media-suite)"
             ),
             "Accept":          "text/html,application/xhtml+xml,text/plain;q=0.9",
             "Accept-Language": "en-US,en;q=0.5",

@@ -32,7 +32,7 @@ Estimated setup time: **30–60 minutes**
 
 ```bash
 # Clone the skills repo
-git clone https://github.com/arcticgreyy/skills.git
+git clone https://github.com/kenlim5656/skills.git
 
 # Copy the paid-media skills to your Claude Code skills directory
 cp -r skills/paid-media ~/.claude/skills/
@@ -44,7 +44,7 @@ Verify in Claude Code: type `/paid-media/` — you should see the skill list aut
 ### Step 2: Set up paid-media-mcp
 
 ```bash
-git clone https://github.com/arcticgreyy/paid-media-mcp.git
+git clone https://github.com/kenlim5656/paid-media-mcp.git
 cd paid-media-mcp
 npm install
 npm run build
@@ -155,7 +155,7 @@ gcloud iam service-accounts keys create service-account.json \
 ### Step 2: Deploy the BigQuery schema
 
 ```bash
-git clone https://github.com/arcticgreyy/paid-media-schema.git
+git clone https://github.com/kenlim5656/paid-media-schema.git
 cd paid-media-schema
 
 # Create the dataset
@@ -191,7 +191,7 @@ suppression falls back to the live Salesforce API.
 ### Step 3: Set up paid-media-mcp (BigQuery mode)
 
 ```bash
-git clone https://github.com/arcticgreyy/paid-media-mcp.git
+git clone https://github.com/kenlim5656/paid-media-mcp.git
 cd paid-media-mcp
 npm install
 npm run build
@@ -233,7 +233,7 @@ and import directly from your existing tables.
 ### Step 5: Deploy paid-media-agent
 
 ```bash
-git clone https://github.com/arcticgreyy/paid-media-agent.git
+git clone https://github.com/kenlim5656/paid-media-agent.git
 cd paid-media-agent
 
 # Install dependencies

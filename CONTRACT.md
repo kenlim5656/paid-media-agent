@@ -5,8 +5,8 @@ This document is the single source of truth for the interfaces shared between
 changes a table, column, or package field listed here, update this file in the
 same PR and mirror the change in the other repo before merging.
 
-- Agent (writer): [arcticgreyy/paid-media-agent](https://github.com/arcticgreyy/paid-media-agent)
-- MCP (reader): [arcticgreyy/paid-media-mcp](https://github.com/arcticgreyy/paid-media-mcp)
+- Agent (writer): [kenlim5656/paid-media-agent](https://github.com/kenlim5656/paid-media-agent)
+- MCP (reader): [kenlim5656/paid-media-mcp](https://github.com/kenlim5656/paid-media-mcp)
 
 ---
 

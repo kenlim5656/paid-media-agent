@@ -2,7 +2,7 @@
 
 **The autonomous execution layer of the Paid Media AI Suite** — three AI agents that forensically audit marketing data, model causal performance with Bayesian math, and execute programmatic budget shifts across five ad networks with strict pre-flight guardrails. Not a dashboard wrapper. Not another SaaS integration. Infrastructure.
 
-Part of the [Paid Media AI Suite](https://github.com/arcticgreyy/paid-media-suite).
+Part of the [Paid Media AI Suite](https://github.com/kenlim5656/paid-media-suite).
 
 ---
 
@@ -184,7 +184,7 @@ All actions logged to `operator_action_log`. Human approval required by default 
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/arcticgreyy/paid-media-agent.git
+git clone https://github.com/kenlim5656/paid-media-agent.git
 cd paid-media-agent
 pip install -e .
 bash scripts/install-hooks.sh   # pre-commit guard against committing private assets
@@ -281,9 +281,9 @@ paid-media-agent/
 
 | Repo | Role |
 |---|---|
-| **[paid-media-agent](https://github.com/arcticgreyy/paid-media-agent)** ← you are here | Autonomous agents + BigQuery schema DDL + deployment docs — the core |
-| **[paid-media-mcp](https://github.com/arcticgreyy/paid-media-mcp)** | Interactive data server — connects Claude Code to live campaign data and agent outputs |
-| **[skills](https://github.com/arcticgreyy/skills)** | Interactive skill library — 16+ paid-media skills for Claude Code |
+| **[paid-media-agent](https://github.com/kenlim5656/paid-media-agent)** ← you are here | Autonomous agents + BigQuery schema DDL + deployment docs — the core |
+| **[paid-media-mcp](https://github.com/kenlim5656/paid-media-mcp)** | Interactive data server — connects Claude Code to live campaign data and agent outputs |
+| **[skills](https://github.com/kenlim5656/skills)** | Interactive skill library — 16+ paid-media skills for Claude Code |
 
 ---
 
@@ -304,4 +304,4 @@ All BigQuery DDL lives in `schema/bigquery/` — 17 SQL files covering every tab
 
 Business Source License 1.1 (BSL 1.1). Persistent attribution required.
 See [LICENSE](./LICENSE) and [NOTICE](./NOTICE) for terms.
-© 2026 @arcticgreyy
+© 2026 @kenlim5656
