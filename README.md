@@ -56,6 +56,44 @@ Part of the [Paid Media AI Suite](https://github.com/kenlim5656/paid-media-suite
                     └─────────────────────────────────────────────────────────────┘
 ```
 
+### Diagram
+
+```mermaid
+flowchart TB
+    subgraph Sources["Telemetry Sources"]
+        direction LR
+        GAds[Google Ads]
+        TikTok[TikTok Ads]
+        Meta[Meta Ads]
+        LI[LinkedIn]
+        Reddit[Reddit Ads]
+        GA4[GA4]
+        SF[Salesforce CRM]
+        IPI[IP Intelligence]
+    end
+
+    Sched[Cloud Scheduler] --> Runner[orchestrator/runner.py]
+    Runner --> Watchdog
+
+    Sources --> Watchdog["Watchdog Agent\n(hourly — forensic anomaly detection)"]
+    Watchdog -- watchdog_alerts --> BQ[(BigQuery)]
+
+    BQ --> Analyst["Analyst Agent\n(daily — BSTS causal + Meridian MMM)"]
+    Private[/"Open Core private .md playbooks\n(never logged/committed)"/] -.-> Analyst
+    Analyst -- budget package --> BQ
+
+    BQ --> Operator["Operator Agent\n(daily — guardrail sweep + mutation loop)"]
+    Operator -->|Google Ads, TikTok, Meta,\nLinkedIn, Reddit, DV360, SA360| Platforms[(Ad Platforms)]
+    Operator -- operator_action_log --> BQ
+
+    HTTP["Cloud Run HTTP routes\n(orchestrator/http_actions.py)"] <--> BQ
+    MCP["paid-media-mcp\n(Node.js MCP server)"] -->|OIDC-authenticated| HTTP
+    MCP --> Claude[Claude Code / Claude Desktop]
+
+    classDef agent fill:#4c6ef5,color:#fff,stroke:none;
+    class Watchdog,Analyst,Operator agent;
+```
+
 ---
 
 ## Core Capabilities
